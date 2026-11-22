@@ -17,12 +17,12 @@ plus your Herdr workspaces and agents on those Macs.</p>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/popover-dark.png">
-    <img src="docs/screenshots/popover-light.png" width="380" alt="The Hop panel: a banner for a waiting agent, then three Macs with status marks and Screen Share, SSH and Files buttons; the Studio Mac lists its Herdr workspaces">
+    <img src="docs/screenshots/popover-light.png" width="380" alt="The Hop panel: a banner for a waiting agent, then three Macs with status marks; the Studio Mac lists its Herdr workspaces, each with its agent status and a plus button for a new tab">
   </picture>
   &nbsp;&nbsp;
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mac-detail-dark.png">
-    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: Screen Share, SSH, Files, Copy Address and Wake, then its Herdr workspaces with one line per agent">
+    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: Screen Share, SSH, Files and a More menu, then its Herdr workspaces with one line per agent, and the Mac's address with a copy button">
   </picture>
 </p>
 
@@ -38,14 +38,14 @@ Each Mac has one-click buttons for the things you do most:
 - **SSH**: opens a terminal session (`ssh://`)
 - **Files**: connects in Finder (`smb://`)
 
-Click a Mac's name for everything else: **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address.
+The three buttons appear when you point at a Mac's row. Click a Mac's name for everything else: **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address.
 
 Macs live in two groups:
 
 - **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name.
-- **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click the **+** on any of them to add it to My Macs, where you can rename it or set a user name.
+- **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. My Macs is shown once you have saved one.
 
-The bottom of the panel has **Manage Macs…**, a **More** menu (Open Screen Sharing, GitHub, Report an Issue, About) and **Quit Hop**. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
+The **More** menu at the top of the panel has **Manage Macs…**, Open Screen Sharing, GitHub, Report an Issue, About and **Quit Hop**. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
 
 Hop is a single Swift file with no dependencies, no account and no telemetry. Your list stays in `~/Library/Application Support/Hop/hosts.json`.
 
@@ -55,8 +55,8 @@ If you use [Herdr](https://herdr.dev) to run coding agents on your Macs, Hop sho
 
 A Mac shows its Herdr workspaces when the Herdr desktop app has it as a machine (**Settings → Machines** in Herdr) under the same host name Hop uses. Each workspace has:
 
-- **Open**: shows that workspace in the Herdr desktop app
-- **New Tab**: adds a tab with a new terminal to it, in the workspace's own folder
+- **Open**: shows that workspace in the Herdr desktop app. In the panel, click the workspace's name.
+- **New Tab**: adds a tab with a new terminal to it, in the workspace's own folder. In the panel, click its **+**.
 
 **New Workspace** creates a workspace on that Mac in one click. It is named after the Mac, starts in the home folder there, and asks nothing first. Rename or close workspaces in Herdr.
 
@@ -74,12 +74,12 @@ Hop also shows what the agents in those workspaces are doing:
 
 The states are working, blocked, done and idle. Status updates every 30 seconds and when you refresh.
 
-Agent status is on by default. Use the **Agent status** menu at the bottom of the panel, or in the Manage Macs toolbar, to **mute it for 8 hours or 1 week**, or turn it **off**. A mute ends by itself; off stays off until you turn it back on. While muted or off, Hop shows no agent status anywhere, and workspaces and their buttons stay.
+Agent status is on by default. Use **Agent status** in the panel's **More** menu, or in the Manage Macs toolbar, to **mute it for 8 hours or 1 week**, or turn it **off**. A mute ends by itself; off stays off until you turn it back on. While muted or off, Hop shows no agent status anywhere, and workspaces and their buttons stay.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/muted-dark.png">
-    <img src="docs/screenshots/muted-light.png" width="380" alt="The Hop panel with agent status muted: workspaces stay listed, and a line shows when the mute ends with a Turn On button">
+    <img src="docs/screenshots/muted-light.png" width="380" alt="The Hop panel with agent status muted: workspaces stay listed without agent status, and a crossed-out bell in the header turns it back on">
   </picture>
 </p>
 

@@ -877,12 +877,13 @@ struct ReachMark: View {
 struct IconButton: View {
     let symbol: String
     let label: String
+    var size: CGFloat = 30
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .frame(width: 30, height: 30)
+                .frame(width: size, height: size)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -896,7 +897,15 @@ private struct SectionLabel: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-            .padding(.top, 6).padding(.leading, 4)
+            .padding(.top, 6).padding(.leading, 8)
+    }
+}
+
+/// A quiet highlight behind the row the pointer is over.
+private struct HoverFill: View {
+    let on: Bool
+    var body: some View {
+        RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(on ? 0.07 : 0))
     }
 }
 
@@ -920,10 +929,12 @@ struct AgentSummary: View {
     }
 }
 
+/// A workspace with its actions. `compact` (the popover's detail view) turns New Tab into a "+" button.
 struct WorkspaceRow: View {
     let space: HerdrSpace
     var showFolder = false
     var showSummary = true
+    var compact = false
     @EnvironmentObject var store: Store
 
     private var folderText: String {
@@ -936,7 +947,7 @@ struct WorkspaceRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: compact ? 4 : 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(space.name).lineLimit(1)
                 if showFolder {
@@ -946,12 +957,51 @@ struct WorkspaceRow: View {
                 if showSummary && store.showAgentStatus { AgentSummary(agents: space.agents) }
             }
             Spacer(minLength: 4)
+            if compact {
+                IconButton(symbol: "plus", label: "New tab in \(space.name)", size: 24) {
+                    Popover.close(); Actions.herdrNewTab(space, store: store)
+                }
+            }
             Button("Open") { Popover.close(); Actions.herdrOpen(space, store: store) }
                 .accessibilityLabel("Open \(space.name) in Herdr")
-            Button("New Tab") { Popover.close(); Actions.herdrNewTab(space, store: store) }
-                .accessibilityLabel("New tab in \(space.name)")
+            if !compact {
+                Button("New Tab") { Popover.close(); Actions.herdrNewTab(space, store: store) }
+                    .accessibilityLabel("New tab in \(space.name)")
+            }
         }
         .controlSize(.small)
+    }
+}
+
+/// A workspace under a Mac's row in the list: the row opens it, "+" adds a tab.
+struct SpaceLine: View {
+    let space: HerdrSpace
+    @EnvironmentObject var store: Store
+    @State private var hovering = false
+
+    var body: some View {
+        let showStatus = store.showAgentStatus && !space.agents.isEmpty
+        HStack(spacing: 2) {
+            Button { Popover.close(); Actions.herdrOpen(space, store: store) } label: {
+                HStack(spacing: 6) {
+                    Text(space.name).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if showStatus { AgentSummary(agents: space.agents) }
+                }
+                .frame(minHeight: 26)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open \(space.name) in Herdr")
+            .accessibilityLabel("Open \(space.name) in Herdr")
+            .accessibilityValue(showStatus ? Herdr.summary(space.agents) : "")
+            IconButton(symbol: "plus", label: "New tab in \(space.name)", size: 24) {
+                Popover.close(); Actions.herdrNewTab(space, store: store)
+            }
+        }
+        .padding(.leading, 27).padding(.trailing, 4)
+        .background(HoverFill(on: hovering))
+        .onHover { hovering = $0 }
     }
 }
 
@@ -976,137 +1026,156 @@ private struct AgentLine: View {
     }
 }
 
-/// A matched Mac's Herdr workspaces and the actions on them.
+/// A matched Mac's Herdr workspaces in its detail view, with one line per agent.
 struct HerdrBlock: View {
     let m: RemoteMac
-    var detailed = false
     @EnvironmentObject var store: Store
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("Herdr workspaces").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-            ForEach(store.spaces(for: m)) { s in
+        let spaces = store.spaces(for: m)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Workspaces").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Popover.close(); Actions.herdrNewWorkspace(m, store: store)
+                } label: {
+                    Label("New", systemImage: "plus")
+                }
+                .buttonStyle(.borderless).controlSize(.small)
+                .help("Creates a workspace named “\(m.name)” in the remote home folder, with no prompt")
+                .accessibilityLabel("New workspace on \(m.name)")
+            }
+            ForEach(Array(spaces.enumerated()), id: \.element.id) { i, s in
+                if i > 0 { Divider() }
                 VStack(alignment: .leading, spacing: 4) {
-                    WorkspaceRow(space: s, showFolder: detailed, showSummary: !detailed)
-                    if detailed && store.showAgentStatus {
+                    WorkspaceRow(space: s, showFolder: true, showSummary: false, compact: true)
+                    if store.showAgentStatus {
                         ForEach(Array(s.agents.enumerated()), id: \.offset) { _, a in AgentLine(agent: a) }
                     }
                 }
             }
-            HStack(spacing: 8) {
-                Button {
-                    Popover.close(); Actions.herdrNewWorkspace(m, store: store)
-                } label: {
-                    Label("New Workspace", systemImage: "plus").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                if !detailed && store.herdrTerminalInstalled {
-                    Button { Popover.close(); Actions.herdrTerminal(m) } label: {
-                        Text("Herdr in Terminal").frame(maxWidth: .infinity)
-                    }
-                    .accessibilityLabel("Open Herdr in Terminal on \(m.name)")
-                }
-            }
-            if detailed {
-                Text("Creates a space named “\(m.name)” in the remote home folder. No prompt.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
     }
 }
 
+/// One line per Mac. Screen Share, SSH and Files appear while the pointer is over the row or one of them
+/// has keyboard focus; VoiceOver gets them as actions on the row either way.
 struct MacRow: View {
     let m: RemoteMac
     let open: () -> Void
     @EnvironmentObject var store: Store
+    @State private var hovering = false
+    @FocusState private var focus: Int?
 
-    private var subtitle: String {
+    private var note: String? {
         if store.online[m.id] == false { return "Offline" }
-        return m.user.isEmpty ? m.host : "\(m.user)@\(m.host)"
+        if m.host.trimmingCharacters(in: .whitespaces).isEmpty { return "No host set" }
+        let n = store.spaces(for: m).count
+        return n > 0 ? "\(n) \(n == 1 ? "workspace" : "workspaces")" : nil
     }
 
     var body: some View {
+        let reveal = hovering || focus != nil
         HStack(spacing: 2) {
             Button(action: open) {
                 HStack(spacing: 10) {
                     ReachMark(online: store.online[m.id])
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(m.name).fontWeight(.semibold).lineLimit(1)
-                        Text(subtitle.isEmpty ? "No host set" : subtitle)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    }
+                    Text(m.name).fontWeight(.semibold).lineLimit(1)
+                        .foregroundStyle(store.online[m.id] == false ? Color.secondary : Color.primary)
                     Spacer(minLength: 4)
-                    let blocked = store.blocked(for: m)
-                    if blocked > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: AgentState.blocked.symbol)
-                                .font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
-                                .accessibilityHidden(true)
-                            Text("\(blocked) blocked").font(.caption).fontWeight(.semibold)
-                        }
-                    }
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
                 }
+                .frame(minHeight: 34)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(note ?? "")
             .accessibilityHint("Shows all actions for \(m.name)")
-            IconButton(symbol: "display", label: "Screen Share \(m.name)") { Popover.close(); Actions.screenShare(m) }
-            IconButton(symbol: "terminal", label: "SSH to \(m.name)") { Popover.close(); Actions.ssh(m) }
-            IconButton(symbol: "folder", label: "Open shared files on \(m.name)") { Popover.close(); Actions.files(m) }
-            if m.isTailnet {
-                IconButton(symbol: "plus.circle", label: "Add \(m.name) to My Macs") { store.pin(m) }
+            .accessibilityAction(named: "Screen Share") { Popover.close(); Actions.screenShare(m) }
+            .accessibilityAction(named: "SSH") { Popover.close(); Actions.ssh(m) }
+            .accessibilityAction(named: "Files") { Popover.close(); Actions.files(m) }
+            ZStack(alignment: .trailing) {
+                if let note {
+                    Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .opacity(reveal ? 0 : 1)
+                        .accessibilityHidden(true)
+                }
+                HStack(spacing: 0) {
+                    IconButton(symbol: "display", label: "Screen Share \(m.name)") { Popover.close(); Actions.screenShare(m) }
+                        .focused($focus, equals: 1)
+                    IconButton(symbol: "terminal", label: "SSH to \(m.name)") { Popover.close(); Actions.ssh(m) }
+                        .focused($focus, equals: 2)
+                    IconButton(symbol: "folder", label: "Open shared files on \(m.name)") { Popover.close(); Actions.files(m) }
+                        .focused($focus, equals: 3)
+                }
+                .opacity(reveal ? 1 : 0)
             }
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                .padding(.leading, 2)
+                .accessibilityHidden(true)
         }
-    }
-}
-
-private struct ActionTile: View {
-    let symbol: String
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 5) {
-                Image(systemName: symbol).font(.system(size: 15))
-                Text(title).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .buttonStyle(.bordered)
+        .padding(.leading, 8).padding(.trailing, 6)
+        .background(HoverFill(on: hovering))
+        .onHover { hovering = $0 }
     }
 }
 
 struct MacDetailView: View {
     let m: RemoteMac
+    /// Called with the saved Mac's id after "Add to My Macs", so the detail view can follow it.
+    let pinned: (UUID) -> Void
     @EnvironmentObject var store: Store
+
+    private var hasHost: Bool { !m.host.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var offersTerminal: Bool { store.herdrTerminalInstalled && hasHost }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                ActionTile(symbol: "display", title: "Screen Share") { Popover.close(); Actions.screenShare(m) }
-                ActionTile(symbol: "terminal", title: "SSH") { Popover.close(); Actions.ssh(m) }
-                ActionTile(symbol: "folder", title: "Files") { Popover.close(); Actions.files(m) }
-                ActionTile(symbol: "doc.on.doc", title: "Copy Address") { Actions.copyAddress(m) }
-                if !m.mac.isEmpty {
-                    ActionTile(symbol: "power", title: "Wake") { Actions.wake(m) }
+            HStack(spacing: 6) {
+                Button { Popover.close(); Actions.screenShare(m) } label: {
+                    Label("Screen Share", systemImage: "display").fixedSize()
+                }
+                .buttonStyle(.borderedProminent)
+                Button { Popover.close(); Actions.ssh(m) } label: {
+                    Label("SSH", systemImage: "terminal").frame(maxWidth: .infinity)
+                }
+                Button { Popover.close(); Actions.files(m) } label: {
+                    Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
+                }
+                if !m.mac.isEmpty || offersTerminal || m.isTailnet {
+                    Menu {
+                        if !m.mac.isEmpty {
+                            Button("Wake") { Actions.wake(m) }
+                        }
+                        if offersTerminal {
+                            Button("Open Herdr in Terminal") { Popover.close(); Actions.herdrTerminal(m) }
+                        }
+                        if m.isTailnet {
+                            Button("Add to My Macs") { pinned(store.pin(m)) }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("More actions")
+                    .accessibilityLabel("More actions for \(m.name)")
                 }
             }
+            .controlSize(.large)
             if store.machine(for: m) != nil {
-                HerdrBlock(m: m, detailed: true)
+                HerdrBlock(m: m)
             }
-            if store.herdrTerminalInstalled && !m.host.trimmingCharacters(in: .whitespaces).isEmpty {
-                Button { Popover.close(); Actions.herdrTerminal(m) } label: {
-                    Label("Open Herdr in Terminal", systemImage: "terminal").frame(maxWidth: .infinity)
+            VStack(spacing: 2) {
+                Divider()
+                HStack(spacing: 4) {
+                    Text(m.user.isEmpty ? m.host : "\(m.user)@\(m.host)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    IconButton(symbol: "doc.on.doc", label: "Copy Address", size: 26) { Actions.copyAddress(m) }
                 }
             }
-            if m.isTailnet {
-                Button { store.pin(m) } label: { Text("Add to My Macs").frame(maxWidth: .infinity) }
-            }
-            Text(m.user.isEmpty ? m.host : "\(m.user)@\(m.host)")
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         }
     }
 }
@@ -1118,6 +1187,10 @@ struct AgentStatusMenu: View {
     var body: some View {
         let mode = store.agentMode.resolved(at: Date())
         Menu {
+            if case .muted = mode {
+                Text(mode.label)
+                Divider()
+            }
             Button { store.agentMode = .on } label: { choice("On", mode == .on) }
             Button("Mute for 8 Hours") { store.mute(for: AgentStatusMode.eightHours) }
             Button("Mute for 1 Week") { store.mute(for: AgentStatusMode.oneWeek) }
@@ -1146,36 +1219,89 @@ struct PopoverView: View {
             if let m = selected { detailHeader(m) } else { header }
             ScrollView {
                 Group {
-                    if let m = selected { MacDetailView(m: m) } else { list }
+                    if let m = selected {
+                        MacDetailView(m: m) { detail = $0 }.padding(.horizontal, 12)
+                    } else {
+                        list.padding(.horizontal, 8)
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
                 .background(GeometryReader { g in
                     Color.clear.preference(key: HeightKey.self, value: g.size.height)
                 })
             }
             .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
             .frame(height: min(max(contentHeight, 60), 520))
-            Divider()
-            footer
         }
         .frame(width: 400)
+        .background(shortcuts)
         .background(WindowAccessor())
         .onAppear { store.refresh() }
+    }
+
+    private func openManager() {
+        Popover.close()
+        openWindow(id: "manager")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Command-comma and Command-Q, live in the list and in a detail view, whether or not the More menu
+    /// is on screen.
+    private var shortcuts: some View {
+        Group {
+            Button("Manage Macs") { openManager() }.keyboardShortcut(",")
+            Button("Quit Hop") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
     }
 
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 2) {
             Text("Hop").font(.headline)
-            Spacer()
             Text("\(store.onlineCount) of \(store.totalCount) online")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary).padding(.leading, 6)
+            Spacer()
+            let mode = store.agentMode.resolved(at: Date())
+            if store.herdrAppInstalled && mode != .on {
+                let text = mode == .off ? "Agent status is off" : "Agent status m\(mode.label.dropFirst())"
+                Button { store.agentMode = .on } label: {
+                    Image(systemName: "bell.slash").frame(width: 30, height: 30).contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("\(text). Click to turn it on.")
+                .accessibilityLabel("\(text). Turn on")
+            }
             IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh() }
                 .keyboardShortcut("r")
+            moreMenu
         }
         .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 6)
+    }
+
+    private var moreMenu: some View {
+        Menu {
+            Button("Manage Macs…") { openManager() }.keyboardShortcut(",")
+            if store.herdrAppInstalled { AgentStatusMenu() }
+            Divider()
+            Button("Open Screen Sharing") { Popover.close(); Actions.openScreenSharingApp() }
+            Divider()
+            Button("Hop on GitHub") { Popover.close(); Actions.openGitHub() }
+            Button("Report an Issue…") { Popover.close(); Actions.reportIssue() }
+            Button("About Hop \(HopInfo.version)") { Popover.close(); Actions.showAbout() }
+            Divider()
+            Button("Quit Hop") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        } label: {
+            Image(systemName: "ellipsis.circle").frame(width: 30, height: 30)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More")
+        .accessibilityLabel("More")
     }
 
     private func detailHeader(_ m: RemoteMac) -> some View {
@@ -1207,29 +1333,35 @@ struct PopoverView: View {
     // MARK: List
 
     private var list: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             banners
-            SectionLabel("My Macs")
-            if store.hosts.isEmpty {
-                Text("No saved Macs yet").foregroundStyle(.secondary).padding(.leading, 4).padding(.vertical, 4)
+            if !store.hosts.isEmpty {
+                SectionLabel("My Macs")
+                ForEach(store.hosts) { m in macBlock(m) }
             }
-            ForEach(store.hosts) { m in macBlock(m) }
             if store.showTailscale {
                 SectionLabel("Tailscale")
                 switch store.tailscaleState {
                 case .running:
                     if store.tailnet.isEmpty {
                         Text(store.tailscaleMacsOnly ? "No other Macs on your tailnet" : "No other devices on your tailnet")
-                            .foregroundStyle(.secondary).padding(.leading, 4).padding(.vertical, 4)
+                            .foregroundStyle(.secondary).padding(.leading, 8).padding(.vertical, 4)
                     }
                     ForEach(store.tailnet) { m in macBlock(m) }
                 case .notInstalled:
-                    Button("Install Tailscale…") { Popover.close(); Actions.openTailscale() }.padding(.leading, 4)
+                    Button("Install Tailscale…") { Popover.close(); Actions.openTailscale() }.padding(.leading, 8)
                 case .notRunning(let msg):
-                    Button("\(msg) — Open Tailscale") { Popover.close(); Actions.openTailscale() }.padding(.leading, 4)
+                    Button("\(msg) — Open Tailscale") { Popover.close(); Actions.openTailscale() }.padding(.leading, 8)
                 case .unknown:
-                    Text("Checking Tailscale…").foregroundStyle(.secondary).padding(.leading, 4).padding(.vertical, 4)
+                    Text("Checking Tailscale…").foregroundStyle(.secondary).padding(.leading, 8).padding(.vertical, 4)
                 }
+            } else if store.hosts.isEmpty {
+                HStack {
+                    Text("No Macs yet").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Add a Mac…") { openManager() }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1238,16 +1370,23 @@ struct PopoverView: View {
     @ViewBuilder
     private func macBlock(_ m: RemoteMac) -> some View {
         if store.machine(for: m) != nil {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
                 MacRow(m: m) { detail = m.id }
-                Divider()
-                HerdrBlock(m: m)
+                ForEach(store.spaces(for: m)) { s in SpaceLine(space: s) }
+                Button { Popover.close(); Actions.herdrNewWorkspace(m, store: store) } label: {
+                    Label("New workspace", systemImage: "plus")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 27)
+                .accessibilityLabel("New workspace on \(m.name)")
             }
-            .padding(.leading, 8).padding(.trailing, 6).padding(.top, 2).padding(.bottom, 8)
+            .padding(.bottom, 4)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.1)))
         } else {
-            MacRow(m: m) { detail = m.id }.padding(.leading, 8).padding(.trailing, 6)
+            MacRow(m: m) { detail = m.id }
         }
     }
 
@@ -1256,69 +1395,24 @@ struct PopoverView: View {
         let b = store.banners
         ForEach(b.shown) { banner in
             let waiting = banner.space.agents.filter { $0.state == .blocked }
-            HStack(spacing: 10) {
-                Image(systemName: AgentState.blocked.symbol).foregroundStyle(.orange).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(waiting.count == 1 ? "\(waiting[0].app) is waiting for you" : "\(waiting.count) agents are waiting for you")
-                        .fontWeight(.semibold).lineLimit(1)
-                    Text("\(banner.space.name) on \(banner.macName)")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
+            HStack(spacing: 8) {
+                Image(systemName: AgentState.blocked.symbol)
+                    .font(.system(size: 10, weight: .bold)).foregroundStyle(.orange).accessibilityHidden(true)
+                Text(waiting.count == 1 ? "\(waiting[0].app) is waiting" : "\(waiting.count) agents are waiting")
+                    .fontWeight(.semibold).lineLimit(1).layoutPriority(1)
+                Text("\(banner.space.name) on \(banner.macName)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 4)
                 Button("Open") { Popover.close(); Actions.herdrOpen(banner.space, store: store) }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .controlSize(.small)
                     .accessibilityLabel("Open \(banner.space.name) in Herdr")
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.14)))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.45)))
+            .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.16)))
+            .padding(.horizontal, 4).padding(.bottom, 2)
         }
         if b.more > 0 {
-            Text("and \(b.more) more").font(.caption).foregroundStyle(.secondary).padding(.leading, 4)
-        }
-    }
-
-    // MARK: Footer
-
-    private var footer: some View {
-        VStack(spacing: 0) {
-            let mode = store.agentMode.resolved(at: Date())
-            if store.herdrAppInstalled && mode != .on {
-                HStack {
-                    Image(systemName: "bell.slash").accessibilityHidden(true)
-                    Text(mode == .off ? "Agent status is off" : "Agent status m\(mode.label.dropFirst())")
-                    Spacer()
-                    Button("Turn On") { store.agentMode = .on }.controlSize(.small)
-                }
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 14).padding(.top, 8)
-            }
-            HStack(spacing: 10) {
-                Button("Manage Macs…") {
-                    Popover.close()
-                    openWindow(id: "manager")
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-                .keyboardShortcut(",")
-                .fixedSize()
-                if store.herdrAppInstalled {
-                    AgentStatusMenu().menuStyle(.borderlessButton).fixedSize()
-                }
-                Menu("More") {
-                    Button("Open Screen Sharing") { Popover.close(); Actions.openScreenSharingApp() }
-                    Divider()
-                    Button("Hop on GitHub") { Popover.close(); Actions.openGitHub() }
-                    Button("Report an Issue…") { Popover.close(); Actions.reportIssue() }
-                    Button("About Hop \(HopInfo.version)") { Popover.close(); Actions.showAbout() }
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-                Spacer()
-                Button("Quit Hop") { NSApp.terminate(nil) }
-                    .keyboardShortcut("q")
-                    .fixedSize()
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 14).padding(.vertical, 8)
+            Text("and \(b.more) more").font(.caption).foregroundStyle(.secondary).padding(.leading, 8)
         }
     }
 }
