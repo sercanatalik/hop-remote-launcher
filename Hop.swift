@@ -411,6 +411,8 @@ enum AgentStatusMode: Equatable {
 final class Store: ObservableObject {
     @Published var hosts: [RemoteMac] = [] { didSet { save() } }
     @Published var online: [UUID: Bool] = [:]
+    /// Whether each Mac accepts file-sharing (SMB) connections, once checked.
+    @Published var fileSharing: [UUID: Bool] = [:]
 
     @Published var tailnet: [RemoteMac] = []
     @Published var tailscaleState: TailscaleState = .unknown
@@ -478,9 +480,12 @@ final class Store: ObservableObject {
             Task {
                 async let vnc = Probe.tcp(host: host, port: 5900)
                 async let ssh = Probe.tcp(host: host, port: 22)
+                async let smb = Probe.tcp(host: host, port: 445)
                 let a = await vnc
                 let b = await ssh
+                let c = await smb
                 self.online[id] = a || b
+                self.fileSharing[id] = c
             }
         }
         refreshTailscale()
@@ -517,6 +522,11 @@ final class Store: ObservableObject {
     var showAgentStatus: Bool { agentMode.resolved(at: Date()).shows }
 
     func mute(for seconds: TimeInterval) { agentMode = .muted(until: Date().addingTimeInterval(seconds)) }
+
+    /// False only when the Mac is online and refused a file-sharing connection at the last check.
+    func filesAvailable(_ m: RemoteMac) -> Bool {
+        !(online[m.id] == true && fileSharing[m.id] == false)
+    }
 
     func mac(_ id: UUID?) -> RemoteMac? {
         guard let id else { return nil }
@@ -583,6 +593,10 @@ final class Store: ObservableObject {
             }
             tailscaleState = state
             tailnet = list
+            for m in list where online[m.id] == true {
+                let id = m.id, host = m.host
+                Task { self.fileSharing[id] = await Probe.tcp(host: host, port: 445) }
+            }
         }
     }
 
@@ -1105,8 +1119,13 @@ struct MacRow: View {
                         .focused($focus, equals: 1)
                     IconButton(symbol: "terminal", label: "SSH to \(m.name)") { Popover.close(); Actions.ssh(m) }
                         .focused($focus, equals: 2)
-                    IconButton(symbol: "folder", label: "Open shared files on \(m.name)") { Popover.close(); Actions.files(m) }
-                        .focused($focus, equals: 3)
+                    let files = store.filesAvailable(m)
+                    IconButton(symbol: "folder",
+                               label: files ? "Open shared files on \(m.name)" : "Open shared files on \(m.name). File Sharing appears to be off") {
+                        Popover.close(); Actions.files(m)
+                    }
+                    .opacity(files ? 1 : 0.35)
+                    .focused($focus, equals: 3)
                 }
                 .opacity(reveal ? 1 : 0)
             }
@@ -1139,9 +1158,13 @@ struct MacDetailView: View {
                 Button { Popover.close(); Actions.ssh(m) } label: {
                     Label("SSH", systemImage: "terminal").frame(maxWidth: .infinity)
                 }
+                let files = store.filesAvailable(m)
                 Button { Popover.close(); Actions.files(m) } label: {
                     Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
                 }
+                .opacity(files ? 1 : 0.45)
+                .help(files ? "Open shared files on \(m.name)" : "File Sharing appears to be off on \(m.name)")
+                .accessibilityLabel(files ? "Files" : "Files. File Sharing appears to be off")
                 if !m.mac.isEmpty || offersTerminal || m.isTailnet {
                     Menu {
                         if !m.mac.isEmpty {

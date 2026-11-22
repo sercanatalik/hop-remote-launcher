@@ -36,7 +36,7 @@ Each Mac has one-click buttons for the things you do most:
 
 - **Screen Share**: opens macOS's built-in Screen Sharing (`vnc://`)
 - **SSH**: opens a terminal session (`ssh://`)
-- **Files**: connects in Finder (`smb://`)
+- **Files**: connects in Finder (`smb://`). The button is dimmed when the Mac is online but File Sharing appears to be off there.
 
 The three buttons appear when you point at a Mac's row. Click a Mac's name for everything else: **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address.
 
