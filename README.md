@@ -4,14 +4,17 @@
 
 <h1 align="center">Hop</h1>
 
-<p align="center">A tiny macOS menu-bar launcher for your remote Macs.<br>
-One click to Screen Share, SSH or open files, with Macs on your Tailscale network found automatically,<br>
-plus your Herdr workspaces and agents on those Macs.</p>
+<p align="center">A tiny macOS menu-bar launcher for your remote computers.<br>
+One click, or a few keys, to Screen Share, SSH or open files on any of your Macs,<br>
+with the ones on your Tailscale network found automatically, Windows PCs and Linux machines too,<br>
+plus your Herdr workspaces and agents.</p>
 
 <p align="center">
+  <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip"><b>Download</b></a> ·
   <a href="https://sercanatalik.github.io/hop-remote-launcher/"><b>Website</b></a> ·
   <a href="#install"><b>Install</b></a> ·
-  <a href="#set-up-your-remote-macs"><b>Set up your remote Macs</b></a>
+  <a href="#set-up-your-remote-computers"><b>Set up your remote computers</b></a> ·
+  <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest"><b>Release notes</b></a>
 </p>
 
 <p align="center">
@@ -32,36 +35,24 @@ plus your Herdr workspaces and agents on those Macs.</p>
 
 Click the Hop icon in the menu bar. A panel lists every Mac you use, each with a status mark: a green dot for online, a hollow ring for offline, a dashed ring while Hop is still checking.
 
-Each Mac has one-click buttons for the things you do most:
+Point at a Mac and three buttons appear for the things you do most:
 
 - **Screen Share**: opens macOS's built-in Screen Sharing (`vnc://`)
 - **SSH**: opens a terminal session (`ssh://`)
-- **Files**: connects in Finder (`smb://`). The button is dimmed when the Mac is online but File Sharing appears to be off there.
+- **Files**: connects in Finder (`smb://`)
 
-The three buttons appear when you point at a Mac's row. Click a Mac's name for everything else: **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address.
+A button is dimmed when the Mac is online but that service appears to be off there. It still works if you click it, since the check can be a few seconds old.
+
+Click a Mac's name for everything else: its response time, **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address.
 
 Macs live in two groups:
 
-- **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name.
-- **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. My Macs is shown once you have saved one.
-
-### Hosts from your SSH config
-
-If you keep machines in `~/.ssh/config`, Manage Macs lists them under **From SSH config**; click the **+** beside one to add it to My Macs with its name, address and user filled in. SSH to a Mac added this way goes through its entry in the file, so its port, key and jump host apply. Hop only reads the file.
-
-A host that is only reachable through a jump host shows as offline in Hop, and its Screen Share and Files won't connect, but SSH still works.
-
-### Windows and Linux computers
-
-Hop also reaches computers that are not Macs. Turn off **Only Macs** in the Manage Macs toolbar's Tailscale menu to list the Windows and Linux computers on your tailnet, or add one yourself and set its **Platform** in Manage Macs.
-
-- A **Windows** PC gets **Remote Desktop** in place of Screen Share. Hop hands the connection to a remote desktop app on your Mac, such as Microsoft's free [Windows App](https://apps.apple.com/app/id1295203466); if none is installed, the button is dimmed and takes you to it.
-- A **Linux** machine keeps Screen Share, for a VNC server.
-- Any button is dimmed when the computer is online but that service appears to be off, the same way Files is.
-
-Phones, tablets and TVs on your tailnet are never listed.
+- **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name. The group is shown once you have saved one.
+- **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name.
 
 **Manage Macs…** and **Quit Hop** are at the bottom of the panel. The **More** menu at the top has agent status, Open Screen Sharing, GitHub, Report an Issue and About. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
+
+Hop is a single Swift file with no dependencies, no account and no telemetry. Your list stays in `~/Library/Application Support/Hop/hosts.json`.
 
 ### Keyboard
 
@@ -87,9 +78,18 @@ With the panel open, just type to filter the list by name or address. While you 
 
 Hop can tell you when a saved Mac goes offline or comes back, without the panel being open. Turn on **Alerts** in the Manage Macs toolbar; macOS asks once for permission to show notifications. A Mac is reported after it misses two checks, about a minute, and nothing is reported when your own Mac loses its network or has just woken. Macs listed only from Tailscale are not reported until you add them to My Macs.
 
-A Mac's detail view also shows how long the last check took to reach it, such as "12 ms".
+### Windows and Linux computers
 
-Hop is a single Swift file with no dependencies, no account and no telemetry. Your list stays in `~/Library/Application Support/Hop/hosts.json`.
+Hop also reaches computers that are not Macs. Turn off **Only Macs** in the Manage Macs toolbar's Tailscale menu to list the Windows and Linux computers on your tailnet, or add one yourself and set its **Platform** in Manage Macs.
+
+- A **Windows** PC gets **Remote Desktop** in place of Screen Share. Hop hands the connection to a remote desktop app on your Mac, such as Microsoft's free [Windows App](https://apps.apple.com/app/id1295203466); if none is installed, the button is dimmed and takes you to it.
+- A **Linux** machine keeps Screen Share, for a VNC server.
+
+Phones, tablets and TVs on your tailnet are never listed.
+
+### Hosts from your SSH config
+
+If you keep machines in `~/.ssh/config`, Manage Macs lists them under **From SSH config**; click the **+** beside one to add it to My Macs with its name, address and user filled in. SSH to a Mac added this way goes through its entry in the file, so its port, key and jump host apply. Hop only reads the file.
 
 ## Herdr workspaces
 
@@ -102,7 +102,7 @@ A Mac shows its Herdr workspaces when the Herdr desktop app has it as a machine 
 
 **New Workspace** creates a workspace on that Mac in one click. It is named after the Mac, starts in the home folder there, and asks nothing first. Rename or close workspaces in Herdr.
 
-**Open Herdr in Terminal** attaches the Herdr terminal app (`herdr --remote`) to the Mac in a terminal window. It is offered for every Mac when the `herdr` command is installed.
+**Open Herdr in Terminal** attaches the Herdr terminal app (`herdr --remote`) to the Mac in a terminal window. It is in the **…** menu of a Mac's detail view, for every Mac, when the `herdr` command is installed.
 
 Workspaces are listed while the Herdr desktop app is open. With Herdr closed, New Workspace still works and starts Herdr first.
 
@@ -116,7 +116,7 @@ Hop also shows what the agents in those workspaces are doing:
 
 The states are working, blocked, done and idle. Status updates every 30 seconds and when you refresh.
 
-Agent status is on by default. Use **Agent status** in the panel's **More** menu, or in the Manage Macs toolbar, to **mute it for 8 hours or 1 week**, or turn it **off**. A mute ends by itself; off stays off until you turn it back on. While muted or off, Hop shows no agent status anywhere, and workspaces and their buttons stay.
+Agent status is on by default. Use **Agent status** in the panel's **More** menu, or in the Manage Macs toolbar, to **mute it for 8 hours or 1 week**, or turn it **off**. A mute ends by itself; off stays off until you turn it back on. While muted or off, Hop shows no agent status anywhere, a crossed-out bell at the top of the panel turns it back on, and workspaces and their buttons stay.
 
 <p align="center">
   <picture>
@@ -128,6 +128,16 @@ Agent status is on by default. Use **Agent status** in the panel's **More** menu
 ## Install
 
 Hop needs macOS 13 or later. It runs on Apple silicon and Intel Macs.
+
+### Download the app
+
+1. Download [`Hop.zip`](https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip), the latest release, and unzip it. Older versions are on the [releases page](https://github.com/sercanatalik/hop-remote-launcher/releases).
+2. Move **Hop.app** to Applications.
+3. Hop isn't notarised by Apple yet, so macOS blocks it the first time. Try to open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. Or run this:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Hop.app
+   ```
 
 ### Build from source
 
@@ -149,21 +159,11 @@ Hop is copied to Applications and starts by itself. Its icon appears in the menu
 
 `./build.sh` alone builds `build/Hop.app` without installing it. `UNIVERSAL=1 ./build.sh` builds one app for both Apple silicon and Intel.
 
-### Download the app
-
-1. Get `Hop.zip` from the [releases page](https://github.com/sercanatalik/hop-remote-launcher/releases) and unzip it.
-2. Move **Hop.app** to Applications.
-3. Hop isn't notarised by Apple yet, so macOS blocks it the first time. Try to open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. Or run this:
-
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/Hop.app
-   ```
-
 ### Update or remove
 
-To update, pull the latest code and run `./build.sh --install` again, or download the newer `Hop.zip` and replace the app. To remove Hop, quit it, delete **Hop.app** from Applications, and delete `~/Library/Application Support/Hop` if you also want your Mac list gone.
+To update, download the newer `Hop.zip` and replace the app, or pull the latest code and run `./build.sh --install` again. To remove Hop, quit it, delete **Hop.app** from Applications, and delete `~/Library/Application Support/Hop` if you also want your Mac list gone.
 
-## Set up your remote Macs
+## Set up your remote computers
 
 On each remote Mac, open **System Settings → General → Sharing** and turn on:
 
@@ -175,17 +175,30 @@ On each remote Mac, open **System Settings → General → Sharing** and turn on
 
 On a Windows PC, turn on **Remote Desktop** (Settings → System → Remote Desktop; Windows Home does not offer it) for Remote Desktop, the **OpenSSH Server** optional feature for SSH, and share a folder for Files. On Linux, run an SSH server, and a VNC or Samba server if you want Screen Share or Files.
 
-**Away from home:** install [Tailscale](https://tailscale.com) on every Mac, and they show up in Hop wherever you are, with no port forwarding.
+**Away from home:** install [Tailscale](https://tailscale.com) on every computer, and they show up in Hop wherever you are, with no port forwarding.
 
 **Wake-on-LAN** only works on the same local network. It also needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings, and MacBooks usually only wake this way when plugged in.
 
 The first time Hop starts, macOS may ask for **Local Network** access. Allow it, or every Mac stays marked offline.
 
+## Troubleshooting
+
+| You see | What to do |
+| --- | --- |
+| "Tailscale isn't running" while Tailscale is running | Update Hop. Versions before 1.1.1 showed this whenever Hop was opened from Finder or at login. |
+| Every Mac is marked offline | Allow Hop under **System Settings → Privacy & Security → Local Network**. |
+| A button is dimmed | That service appears to be off on that computer. Turn it on there (see the table above); the button still tries if you click it. |
+| Remote Desktop is dimmed on every Windows PC | No remote desktop app is installed on your Mac. Click the button to get Windows App. |
+| A host from your SSH config shows as offline | It is probably only reachable through a jump host. SSH still works; Screen Share and Files won't. |
+| The global shortcut does nothing, or Manage Macs says it is unavailable | Another app holds that shortcut. Choose a different one. |
+
+Remote Desktop to a Windows PC has not been tested against a real PC yet. If it doesn't connect for you, please [report it](https://github.com/sercanatalik/hop-remote-launcher/issues/new).
+
 ## Contributing
 
 Issues and pull requests are welcome. Use **Report an Issue…** in Hop's **More** menu, or [open one here](https://github.com/sercanatalik/hop-remote-launcher/issues/new).
 
-Hop is deliberately small: one Swift file (`Hop.swift`) and a build script, with no Xcode project. Every push is built on a real Mac by GitHub Actions. To publish a release, push a tag like `v1.0.0`, and the workflow attaches a universal `Hop.zip`.
+Hop is deliberately small: one Swift file (`Hop.swift`) and a build script, with no Xcode project. Every push is built on a real Mac by GitHub Actions. To publish a release, push a tag like `v1.1.1`, and the workflow attaches a universal `Hop.zip`.
 
 ## License
 
