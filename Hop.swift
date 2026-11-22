@@ -240,15 +240,30 @@ enum Tailscale {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
             p.arguments = ["status", "--json"]
+            // The Tailscale app's binary is both the GUI and the command-line tool, and picks its mode
+            // from the environment. An app started from Finder or at login has a bare environment, in
+            // which the binary tries to be the GUI and prints "The Tailscale GUI failed to start" in
+            // place of the status. TAILSCALE_BE_CLI is Tailscale's switch for forcing the tool.
+            var env = ProcessInfo.processInfo.environment
+            env["TAILSCALE_BE_CLI"] = "1"
+            p.environment = env
             let out = Pipe()
             p.standardOutput = out
             p.standardError = FileHandle.nullDevice
             do { try p.run() } catch { return (.notRunning("Couldn't run Tailscale"), []) }
             let data = out.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
+            return interpret(data)
+        }.value
+    }
 
+    /// Turns the output of `tailscale status --json` into a state and the peers. No output means the
+    /// Tailscale service did not answer; output that is not a status is reported as unreadable.
+    static func interpret(_ data: Data) -> (TailscaleState, [TailscalePeer]) {
+        do {
             guard let s = try? JSONDecoder().decode(Status.self, from: data) else {
-                return (.notRunning("Tailscale isn't running"), [])
+                let blank = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? false
+                return (.notRunning(blank ? "Tailscale isn't running" : "Couldn't read Tailscale's status"), [])
             }
             guard s.BackendState == "Running" else {
                 let state = s.BackendState ?? "Stopped"
@@ -266,7 +281,7 @@ enum Tailscale {
             .filter { !$0.host.isEmpty }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             return (.running, peers)
-        }.value
+        }
     }
 }
 
