@@ -11,6 +11,9 @@ import SwiftUI
 import AppKit
 import Network
 import ServiceManagement
+import UserNotifications
+import Carbon.HIToolbox
+import Combine
 
 // MARK: - Model
 
@@ -405,6 +408,166 @@ enum AgentStatusMode: Equatable {
     }
 }
 
+// MARK: - Reachability alerts
+
+/// Decides when a saved Mac going offline or coming back is worth a notification.
+/// A Mac is reported offline after two misses at least `minGap` apart, and reported back only if
+/// Hop reported it offline. A quiet check updates what Hop believes without reporting anything.
+struct ReachTracker {
+    enum Event: Equatable { case offline, back }
+    static let minGap: TimeInterval = 20
+
+    private struct Entry {
+        var online: Bool
+        var misses = 0
+        var firstMiss: Date?
+        var announced = false
+    }
+    private var entries: [UUID: Entry] = [:]
+
+    mutating func observe(_ id: UUID, online: Bool, quiet: Bool, now: Date = Date()) -> Event? {
+        guard var e = entries[id] else {
+            entries[id] = Entry(online: online)     // first sighting, whatever its state, is never news
+            return nil
+        }
+        defer { entries[id] = e }
+        if online {
+            e.misses = 0
+            e.firstMiss = nil
+            guard !e.online else { return nil }
+            e.online = true
+            let wasAnnounced = e.announced
+            e.announced = false
+            return wasAnnounced && !quiet ? .back : nil
+        }
+        e.misses += 1
+        if e.firstMiss == nil { e.firstMiss = now }
+        guard e.online, e.misses >= 2, now.timeIntervalSince(e.firstMiss ?? now) >= ReachTracker.minGap else { return nil }
+        e.online = false
+        guard !quiet else { return nil }
+        e.announced = true
+        return .offline
+    }
+}
+
+private final class AlertPresenter: NSObject, UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
+    }
+}
+
+enum Alerts {
+    private static let presenter = AlertPresenter()
+
+    /// Notifications need a bundle; a bare binary has none.
+    private static var center: UNUserNotificationCenter? {
+        guard Bundle.main.bundleIdentifier != nil else { return nil }
+        let c = UNUserNotificationCenter.current()
+        c.delegate = presenter
+        return c
+    }
+
+    static func request() async -> Bool {
+        guard let center else { return false }
+        return (try? await center.requestAuthorization(options: [.alert])) ?? false
+    }
+
+    static func denied() async -> Bool {
+        guard let center else { return true }
+        return await center.notificationSettings().authorizationStatus == .denied
+    }
+
+    static func post(title: String, body: String) {
+        guard let center else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    static func openSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+// MARK: - Quick open
+
+/// The global shortcut that opens the popover, and the way to open the popover from code.
+///
+/// Spike result (add-quick-open-hotkey, task 1.1, macOS 27.2): a SwiftUI MenuBarExtra cannot be opened
+/// from code. Its button (an NSStatusBarButton with no action or target, on an NSSceneStatusItem) ignored
+/// performClick, a synthetic mouse-down and mouse-up sent to its window, and a direct mouseDown. Hop
+/// therefore owns its status item and popover (see AppController), which the shortcut toggles.
+/// RegisterEventHotKey worked for all three presets.
+enum QuickOpen {
+    struct Choice: Identifiable {
+        let id: String
+        let label: String
+        let key: Int
+        let modifiers: Int
+    }
+
+    static let off = "off"
+    static let choices: [Choice] = [
+        Choice(id: "ctrl-opt-space", label: "⌃⌥Space", key: kVK_Space, modifiers: controlKey | optionKey),
+        Choice(id: "ctrl-opt-h", label: "⌃⌥H", key: kVK_ANSI_H, modifiers: controlKey | optionKey),
+        Choice(id: "opt-cmd-h", label: "⌥⌘H", key: kVK_ANSI_H, modifiers: optionKey | cmdKey),
+    ]
+
+    static func label(_ id: String) -> String { choices.first { $0.id == id }?.label ?? "Off" }
+
+    private static var hotKey: EventHotKeyRef?
+    private static var handlerInstalled = false
+
+    /// Registers the shortcut, replacing any earlier one. "off" unregisters. False means the shortcut
+    /// is held by another app; nothing is registered then.
+    static func register(_ id: String) -> Bool {
+        if let hotKey { UnregisterEventHotKey(hotKey) }
+        hotKey = nil
+        guard let choice = choices.first(where: { $0.id == id }) else { return true }
+        if !handlerInstalled {
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+                Task { @MainActor in QuickOpen.togglePopover() }
+                return noErr
+            }, 1, &spec, nil, nil)
+            handlerInstalled = true
+        }
+        let hotKeyID = EventHotKeyID(signature: OSType(0x484F5021), id: 1)   // "HOP!"
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(UInt32(choice.key), UInt32(choice.modifiers), hotKeyID,
+                                         GetApplicationEventTarget(), OptionBits(kEventHotKeyExclusive), &ref)
+        guard status == noErr, let ref else { return false }
+        hotKey = ref
+        return true
+    }
+
+    /// Opens the popover, or closes it when it is open.
+    @MainActor
+    static func togglePopover() { AppController.shared?.togglePopover() }
+}
+
+/// What the user has typed into the Mac list, and which listed Mac is highlighted.
+@MainActor
+final class KeyNav: ObservableObject {
+    @Published var query = ""
+    @Published var index = 0
+    var handle: ((NSEvent) -> Bool)?
+    private var monitor: Any?
+
+    /// Key presses in the popover go to `handle` first; it returns true for the ones it used.
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window != nil, event.window === Popover.window else { return event }
+            return self.handle?(event) == true ? nil : event
+        }
+    }
+}
+
 // MARK: - Store
 
 @MainActor
@@ -430,6 +593,31 @@ final class Store: ObservableObject {
     @Published var herdrSpaces: [String: [HerdrSpace]] = [:]
     @Published var agentMode: AgentStatusMode = AgentStatusMode.load() { didSet { agentMode.save() } }
 
+    // Reachability alerts
+    /// Milliseconds the last successful check took to reach each Mac.
+    @Published var latency: [UUID: Int] = [:]
+    @Published private(set) var alertsEnabled = UserDefaults.standard.bool(forKey: "reachabilityAlerts") {
+        didSet { UserDefaults.standard.set(alertsEnabled, forKey: "reachabilityAlerts") }
+    }
+    /// Notifications are refused for Hop in System Settings.
+    @Published var alertsDenied = false
+    @Published var alertsDeniedPrompt = false
+    private var reach = ReachTracker()
+
+    // Quick open
+    @Published private(set) var hotkey = UserDefaults.standard.string(forKey: "quickOpenHotkey") ?? QuickOpen.off {
+        didSet { UserDefaults.standard.set(hotkey, forKey: "quickOpenHotkey") }
+    }
+    /// Counts each time the popover is shown, so the list can start clean.
+    @Published var popoverShows = 0
+    /// Why the chosen shortcut could not be set, when it could not.
+    @Published var hotkeyProblem: String?
+    @Published var hotkeyProblemPrompt = false
+    private let pathMonitor = NWPathMonitor()
+    private var hasNetwork = true
+    /// The next check only records state: set at launch, after wake and when the network comes back.
+    private var quietNextCheck = true
+
     private let fileURL: URL
     private var timer: Timer?
     private var loading = false
@@ -449,6 +637,25 @@ final class Store: ObservableObject {
             try? FileManager.default.copyItem(at: old, to: fileURL)
         }
         load()
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let up = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                if up && !self.hasNetwork { self.quietNextCheck = true }
+                self.hasNetwork = up
+            }
+        }
+        pathMonitor.start(queue: .global(qos: .utility))
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.quietNextCheck = true }
+        }
+        if alertsEnabled {
+            Task { if await Alerts.denied() { self.alertsEnabled = false; self.alertsDenied = true } }
+        }
+        if hotkey != QuickOpen.off {
+            let saved = hotkey
+            DispatchQueue.main.async { [weak self] in self?.setHotkey(saved, prompt: false) }
+        }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -475,21 +682,69 @@ final class Store: ObservableObject {
     }
 
     func refresh() {
+        let quiet = quietNextCheck
+        quietNextCheck = false
         for m in hosts where !m.host.trimmingCharacters(in: .whitespaces).isEmpty {
-            let id = m.id, host = m.host.trimmingCharacters(in: .whitespaces)
+            let id = m.id, name = m.name, host = m.host.trimmingCharacters(in: .whitespaces)
             Task {
-                async let vnc = Probe.tcp(host: host, port: 5900)
-                async let ssh = Probe.tcp(host: host, port: 22)
-                async let smb = Probe.tcp(host: host, port: 445)
+                async let vnc = Probe.timed(host: host, port: 5900)
+                async let ssh = Probe.timed(host: host, port: 22)
+                async let smb = Probe.timed(host: host, port: 445)
                 let a = await vnc
                 let b = await ssh
                 let c = await smb
-                self.online[id] = a || b
-                self.fileSharing[id] = c
+                let up = a != nil || b != nil
+                self.online[id] = up
+                self.fileSharing[id] = c != nil
+                self.latency[id] = [a, b, c].compactMap { $0 }.min()
+                self.noteReach(id, name: name, online: up, quiet: quiet)
             }
         }
         refreshTailscale()
         refreshHerdr()
+    }
+
+    // MARK: Reachability alerts
+
+    /// Feeds one check of a saved Mac to the tracker and posts a notification when it is news.
+    /// Nothing is counted while this computer has no network, so a local outage reports no Mac.
+    private func noteReach(_ id: UUID, name: String, online: Bool, quiet: Bool) {
+        guard hasNetwork, hosts.contains(where: { $0.id == id }) else { return }
+        guard let event = reach.observe(id, online: online, quiet: quiet), alertsEnabled else { return }
+        switch event {
+        case .offline: Alerts.post(title: "\(name) is offline", body: "No answer for about a minute.")
+        case .back:    Alerts.post(title: "\(name) is back online", body: "Hop can reach it again.")
+        }
+    }
+
+    /// Turning alerts on asks for notification permission; a refusal leaves them off and says why.
+    func setAlerts(_ on: Bool) {
+        guard on else { alertsEnabled = false; return }
+        Task {
+            if await Alerts.request() {
+                alertsEnabled = true
+                alertsDenied = false
+            } else {
+                alertsEnabled = false
+                alertsDenied = true
+                alertsDeniedPrompt = true
+            }
+        }
+    }
+
+    // MARK: Quick open
+
+    /// Sets the global shortcut. One held by another app leaves the shortcut off and says so.
+    func setHotkey(_ id: String, prompt: Bool = true) {
+        if QuickOpen.register(id) {
+            hotkey = id
+            hotkeyProblem = nil
+        } else {
+            _ = QuickOpen.register(QuickOpen.off)
+            hotkey = QuickOpen.off
+            hotkeyProblem = "\(QuickOpen.label(id)) is already used by another app, so no shortcut is set."
+            hotkeyProblemPrompt = prompt
+        }
     }
 
     // MARK: Herdr
@@ -595,7 +850,11 @@ final class Store: ObservableObject {
             tailnet = list
             for m in list where online[m.id] == true {
                 let id = m.id, host = m.host
-                Task { self.fileSharing[id] = await Probe.tcp(host: host, port: 445) }
+                Task {
+                    let ms = await Probe.timed(host: host, port: 445)
+                    self.fileSharing[id] = ms != nil
+                    if let ms { self.latency[id] = ms }
+                }
             }
         }
     }
@@ -645,14 +904,20 @@ private final class Once: @unchecked Sendable {
 
 enum Probe {
     static func tcp(host: String, port: UInt16, timeout: Double = 2.5) async -> Bool {
-        guard let p = NWEndpoint.Port(rawValue: port) else { return false }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+        await timed(host: host, port: port, timeout: timeout) != nil
+    }
+
+    /// How long the TCP connect took, in milliseconds, or nil when it did not connect.
+    static func timed(host: String, port: UInt16, timeout: Double = 2.5) async -> Int? {
+        guard let p = NWEndpoint.Port(rawValue: port) else { return nil }
+        let started = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Int?, Never>) in
             let conn = NWConnection(host: NWEndpoint.Host(host), port: p, using: .tcp)
             let once = Once()
             let finish: @Sendable (Bool) -> Void = { ok in
                 guard once.claim() else { return }
                 conn.cancel()
-                cont.resume(returning: ok)
+                cont.resume(returning: ok ? max(1, Int((Date().timeIntervalSince(started) * 1000).rounded())) : nil)
             }
             conn.stateUpdateHandler = { state in
                 switch state {
@@ -842,16 +1107,13 @@ enum Actions {
 
 // MARK: - Popover
 
-/// The menu-bar popover's window, so actions that leave Hop can close it.
+/// The menu-bar popover: its window, for telling its key presses apart, and the way to close it.
 enum Popover {
     static weak var window: NSWindow?
 
-    /// Closes the popover. Its status item has no action to trigger (SwiftUI tracks the mouse itself),
-    /// so the window is closed directly; actions that bring another app forward dismiss it anyway.
+    /// Closes the popover after an action that leaves Hop.
     @MainActor
-    static func close() {
-        if let window, window.isVisible { window.close() }
-    }
+    static func close() { AppController.shared?.closePopover() }
 }
 
 private final class WindowProbe: NSView {
@@ -1077,6 +1339,8 @@ struct HerdrBlock: View {
 /// has keyboard focus; VoiceOver gets them as actions on the row either way.
 struct MacRow: View {
     let m: RemoteMac
+    /// Chosen from the keyboard: shows the actions and an outline, so it does not rely on color.
+    var highlighted = false
     let open: () -> Void
     @EnvironmentObject var store: Store
     @State private var hovering = false
@@ -1090,7 +1354,7 @@ struct MacRow: View {
     }
 
     var body: some View {
-        let reveal = hovering || focus != nil
+        let reveal = hovering || focus != nil || highlighted
         HStack(spacing: 2) {
             Button(action: open) {
                 HStack(spacing: 10) {
@@ -1134,7 +1398,9 @@ struct MacRow: View {
                 .accessibilityHidden(true)
         }
         .padding(.leading, 8).padding(.trailing, 6)
-        .background(HoverFill(on: hovering))
+        .background(HoverFill(on: hovering || highlighted))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.accentColor, lineWidth: highlighted ? 1.5 : 0))
+        .accessibilityAddTraits(highlighted ? .isSelected : [])
         .onHover { hovering = $0 }
     }
 }
@@ -1235,15 +1501,81 @@ struct PopoverView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var detail: UUID?
     @State private var contentHeight: CGFloat = 200
+    @StateObject private var nav = KeyNav()
+
+    private var filtering: Bool { !nav.query.isEmpty }
+
+    private func matches(_ m: RemoteMac) -> Bool {
+        m.name.localizedCaseInsensitiveContains(nav.query) || m.host.localizedCaseInsensitiveContains(nav.query)
+    }
+
+    /// The Macs listed while text is typed, in the order they are drawn.
+    private var matched: [RemoteMac] {
+        store.hosts.filter(matches) + (store.showTailscale ? store.tailnet.filter(matches) : [])
+    }
+
+    private var highlighted: RemoteMac? {
+        let list = matched
+        return list.isEmpty ? nil : list[min(nav.index, list.count - 1)]
+    }
+
+    /// Keyboard in the Mac list: typing filters, arrows move the highlight, Return opens the highlighted
+    /// Mac, Command-1 to 3 run its actions, Escape clears and then closes. Returns true for keys it used.
+    private func handleKey(_ event: NSEvent) -> Bool {
+        guard store.mac(detail) == nil else { return false }
+        let mods = event.modifierFlags.intersection([.command, .control, .option])
+        if mods == .command, filtering, let m = highlighted,
+           let n = ["1", "2", "3"].firstIndex(of: event.charactersIgnoringModifiers ?? "") {
+            Popover.close()
+            switch n {
+            case 0:  Actions.screenShare(m)
+            case 1:  Actions.ssh(m)
+            default: Actions.files(m)
+            }
+            return true
+        }
+        guard mods.isEmpty else { return false }
+        switch Int(event.keyCode) {
+        case kVK_Escape:
+            if filtering { nav.query = ""; nav.index = 0 } else { Popover.close() }
+            return true
+        case kVK_Delete:
+            guard filtering else { return false }
+            nav.query.removeLast(); nav.index = 0
+            return true
+        case kVK_DownArrow:
+            guard filtering else { return false }
+            nav.index = min(nav.index + 1, max(matched.count - 1, 0))
+            return true
+        case kVK_UpArrow:
+            guard filtering else { return false }
+            nav.index = max(min(nav.index, matched.count - 1) - 1, 0)
+            return true
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            guard filtering, let m = highlighted else { return false }
+            detail = m.id
+            nav.query = ""; nav.index = 0
+            return true
+        default:
+            guard let text = event.characters, !text.isEmpty,
+                  text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }),
+                  filtering || text != " " else { return false }
+            nav.query += text
+            nav.index = 0
+            return true
+        }
+    }
 
     var body: some View {
         let selected = store.mac(detail)
         VStack(spacing: 0) {
-            if let m = selected { detailHeader(m) } else { header }
+            if let m = selected { detailHeader(m) } else if filtering { searchHeader } else { header }
             ScrollView {
                 Group {
                     if let m = selected {
                         MacDetailView(m: m) { detail = $0 }.padding(.horizontal, 12)
+                    } else if filtering {
+                        filteredList.padding(.horizontal, 8)
                     } else {
                         list.padding(.horizontal, 8)
                     }
@@ -1255,11 +1587,77 @@ struct PopoverView: View {
             }
             .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
             .frame(height: min(max(contentHeight, 60), 520))
+            if selected == nil { if filtering { keyLine } else { bottomLine } }
         }
         .frame(width: 400)
         .background(shortcuts)
         .background(WindowAccessor())
-        .onAppear { store.refresh() }
+        .onAppear {
+            nav.handle = { handleKey($0) }
+            nav.install()
+        }
+        .onChange(of: store.popoverShows) { _ in nav.query = ""; nav.index = 0 }
+    }
+
+    /// Manage Macs and Quit, in plain view at the bottom of the Mac list, each with its shortcut.
+    private var bottomLine: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack {
+                Button { openManager() } label: { keyHint("⌘,", "Manage Macs…", keyFirst: false) }
+                    .accessibilityLabel("Manage Macs")
+                Spacer()
+                Button { NSApp.terminate(nil) } label: { keyHint("⌘Q", "Quit Hop", keyFirst: false) }
+                    .accessibilityLabel("Quit Hop")
+            }
+            .buttonStyle(.plain)
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 14).padding(.vertical, 7)
+        }
+    }
+
+    /// The typed text, in place of the title and the online count.
+    private var searchHeader: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(nav.query).fontWeight(.medium).lineLimit(1)
+                .accessibilityLabel("Filtering by \(nav.query)")
+            Spacer()
+            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh() }
+                .keyboardShortcut("r")
+            moreMenu
+        }
+        .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 6)
+    }
+
+    private func keyHint(_ key: String, _ what: String, keyFirst: Bool = true) -> some View {
+        HStack(spacing: 5) {
+            if !keyFirst { Text(what) }
+            Text(key).font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.1)))
+            if keyFirst { Text(what) }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Names the keys that act on the list while text is typed.
+    private var keyLine: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                if highlighted != nil {
+                    keyHint("↩", "Details")
+                    keyHint("⌘1", "Screen Share")
+                    keyHint("⌘2", "SSH")
+                    keyHint("⌘3", "Files")
+                }
+                Spacer(minLength: 0)
+                keyHint("esc", "Clear")
+            }
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .padding(.horizontal, 12).padding(.vertical, 7)
+        }
     }
 
     private func openManager() {
@@ -1307,16 +1705,12 @@ struct PopoverView: View {
 
     private var moreMenu: some View {
         Menu {
-            Button("Manage Macs…") { openManager() }.keyboardShortcut(",")
-            if store.herdrAppInstalled { AgentStatusMenu() }
-            Divider()
+            if store.herdrAppInstalled { AgentStatusMenu(); Divider() }
             Button("Open Screen Sharing") { Popover.close(); Actions.openScreenSharingApp() }
             Divider()
             Button("Hop on GitHub") { Popover.close(); Actions.openGitHub() }
             Button("Report an Issue…") { Popover.close(); Actions.reportIssue() }
             Button("About Hop \(HopInfo.version)") { Popover.close(); Actions.showAbout() }
-            Divider()
-            Button("Quit Hop") { NSApp.terminate(nil) }.keyboardShortcut("q")
         } label: {
             Image(systemName: "ellipsis.circle").frame(width: 30, height: 30)
         }
@@ -1350,10 +1744,34 @@ struct PopoverView: View {
         if let machine = store.machine(for: m) {
             parts.append(machine.state.isEmpty ? "Herdr" : "Herdr \(machine.state)")
         }
+        if store.online[m.id] == true, let ms = store.latency[m.id] { parts.append("\(ms) ms") }
         return parts.joined(separator: " · ")
     }
 
     // MARK: List
+
+    /// The list while text is typed: only the Macs that match, without workspaces or banners.
+    @ViewBuilder
+    private var filteredList: some View {
+        let mine = store.hosts.filter(matches)
+        let tail = store.showTailscale ? store.tailnet.filter(matches) : []
+        let chosen = highlighted?.id
+        VStack(alignment: .leading, spacing: 2) {
+            if mine.isEmpty && tail.isEmpty {
+                Text("No Macs match “\(nav.query)”").foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+            }
+            if !mine.isEmpty {
+                SectionLabel("My Macs")
+                ForEach(mine) { m in MacRow(m: m, highlighted: m.id == chosen) { detail = m.id } }
+            }
+            if !tail.isEmpty {
+                SectionLabel("Tailscale")
+                ForEach(tail) { m in MacRow(m: m, highlighted: m.id == chosen) { detail = m.id } }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
     private var list: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -1560,6 +1978,37 @@ struct ManagerView: View {
                 if store.herdrAppInstalled { AgentStatusMenu() }
             }
             ToolbarItem {
+                Menu {
+                    Picker("Open Hop from anywhere", selection: Binding(get: { store.hotkey }, set: { store.setHotkey($0) })) {
+                        Text("Off").tag(QuickOpen.off)
+                        ForEach(QuickOpen.choices) { c in Text(c.label).tag(c.id) }
+                    }
+                    .pickerStyle(.inline)
+                    if let problem = store.hotkeyProblem {
+                        Divider()
+                        Text(problem)
+                    }
+                } label: {
+                    Label("Shortcut", systemImage: "keyboard")
+                }
+                .accessibilityLabel("Shortcut to open Hop, \(QuickOpen.label(store.hotkey))")
+            }
+            ToolbarItem {
+                Menu {
+                    Toggle("Notify when a saved Mac goes offline or comes back",
+                           isOn: Binding(get: { store.alertsEnabled }, set: { store.setAlerts($0) }))
+                    Text("A Mac is reported after it misses two checks, about a minute.")
+                    if store.alertsDenied {
+                        Divider()
+                        Text("Notifications are turned off for Hop in System Settings")
+                        Button("Open System Settings…") { Alerts.openSettings() }
+                    }
+                } label: {
+                    Label("Alerts", systemImage: store.alertsEnabled ? "bell.badge" : "bell")
+                }
+                .accessibilityLabel("Alerts, \(store.alertsEnabled ? "on" : "off")")
+            }
+            ToolbarItem {
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .toggleStyle(.checkbox)
                     .onChange(of: launchAtLogin) { on in
@@ -1579,6 +2028,17 @@ struct ManagerView: View {
         }
         .frame(minWidth: 680, minHeight: 380)
         .onAppear { store.refresh() }
+        .alert("Notifications are turned off for Hop", isPresented: $store.alertsDeniedPrompt) {
+            Button("Open System Settings…") { Alerts.openSettings() }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Allow notifications for Hop in System Settings, then turn this on again to be told when a saved Mac goes offline or comes back.")
+        }
+        .alert("That shortcut is unavailable", isPresented: $store.hotkeyProblemPrompt) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.hotkeyProblem ?? "")
+        }
     }
 
     /// Herdr machine, workspaces and actions for a Mac, under the same agent status rules as the popover.
@@ -1657,24 +2117,80 @@ enum HopGlyph {
 
 // MARK: - App
 
+/// Owns the menu-bar item and its popover. Hop does not use SwiftUI's MenuBarExtra because that cannot
+/// be opened from code, which the global shortcut needs.
+@MainActor
+final class AppController: NSObject, NSApplicationDelegate {
+    static private(set) weak var shared: AppController?
+
+    let store = Store()
+    private var item: NSStatusItem?
+    private let popover = NSPopover()
+    private var watching: AnyCancellable?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppController.shared = self
+
+        let host = NSHostingController(rootView: PopoverView().environmentObject(store))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.behavior = .transient
+        popover.animates = false
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = HopGlyph.image
+        item.button?.imagePosition = .imageLeading
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.setAccessibilityLabel("Hop")
+        self.item = item
+
+        // The glyph, plus the number of agents waiting for you when agent status is on.
+        watching = store.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateTitle() }
+        }
+        updateTitle()
+    }
+
+    /// Hop lives in the menu bar: closing the popover or the Manage Macs window must not quit it.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    private func updateTitle() {
+        let blocked = store.totalBlocked
+        item?.button?.title = blocked > 0 ? " \(blocked)" : ""
+    }
+
+    @objc private func statusItemClicked() { togglePopover() }
+
+    func togglePopover() {
+        if popover.isShown { closePopover() } else { showPopover() }
+    }
+
+    func showPopover() {
+        guard let button = item?.button else { return }
+        store.popoverShows += 1
+        store.refresh()
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    func closePopover() {
+        if popover.isShown { popover.performClose(nil) }
+    }
+}
+
 @main
 struct HopApp: App {
-    @StateObject private var store = Store()
+    @NSApplicationDelegateAdaptor(AppController.self) private var controller
 
     var body: some Scene {
-        MenuBarExtra {
-            PopoverView().environmentObject(store)
-        } label: {
-            // The glyph, plus the number of agents waiting for you when agent status is on.
-            HStack(spacing: 3) {
-                Image(nsImage: HopGlyph.image)
-                if store.totalBlocked > 0 { Text("\(store.totalBlocked)") }
-            }
-        }
-        .menuBarExtraStyle(.window)
+        // Never shown. It stays the first scene so that the Manage Macs window below is a secondary
+        // scene, which SwiftUI does not open at launch.
+        MenuBarExtra("Hop", isInserted: .constant(false)) { EmptyView() }
 
         Window("Manage Macs", id: "manager") {
-            ManagerView().environmentObject(store)
+            ManagerView().environmentObject(controller.store)
         }
         .windowResizability(.contentSize)
     }

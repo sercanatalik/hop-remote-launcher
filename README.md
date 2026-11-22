@@ -45,7 +45,26 @@ Macs live in two groups:
 - **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name.
 - **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. My Macs is shown once you have saved one.
 
-The **More** menu at the top of the panel has **Manage Macs…**, Open Screen Sharing, GitHub, Report an Issue, About and **Quit Hop**. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
+**Manage Macs…** and **Quit Hop** are at the bottom of the panel. The **More** menu at the top has agent status, Open Screen Sharing, GitHub, Report an Issue and About. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
+
+### Keyboard
+
+Set a global shortcut under **Shortcut** in the Manage Macs toolbar (⌃⌥Space, ⌃⌥H or ⌥⌘H; off by default) to open the panel from any app. Press it again to close.
+
+With the panel open, just type to filter the list by name or address. While you type:
+
+| Key | Does |
+|---|---|
+| ↑ ↓ | Move the highlight |
+| ↩ | Open the highlighted Mac's details |
+| ⌘1, ⌘2, ⌘3 | Screen Share, SSH, Files on the highlighted Mac |
+| esc | Clear what you typed; press again to close the panel |
+
+### Alerts
+
+Hop can tell you when a saved Mac goes offline or comes back, without the panel being open. Turn on **Alerts** in the Manage Macs toolbar; macOS asks once for permission to show notifications. A Mac is reported after it misses two checks, about a minute, and nothing is reported when your own Mac loses its network or has just woken. Macs listed only from Tailscale are not reported until you add them to My Macs.
+
+A Mac's detail view also shows how long the last check took to reach it, such as "12 ms".
 
 Hop is a single Swift file with no dependencies, no account and no telemetry. Your list stays in `~/Library/Application Support/Hop/hosts.json`.
 
