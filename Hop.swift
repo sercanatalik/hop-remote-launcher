@@ -665,7 +665,7 @@ enum Alerts {
 
 /// The global shortcut that opens the popover, and the way to open the popover from code.
 ///
-/// Spike result (add-quick-open-hotkey, task 1.1, macOS 27.2): a SwiftUI MenuBarExtra cannot be opened
+/// Tried on macOS 27.2: a SwiftUI MenuBarExtra cannot be opened
 /// from code. Its button (an NSStatusBarButton with no action or target, on an NSSceneStatusItem) ignored
 /// performClick, a synthetic mouse-down and mouse-up sent to its window, and a direct mouseDown. Hop
 /// therefore owns its status item and popover (see AppController), which the shortcut toggles.
@@ -1191,7 +1191,7 @@ enum Actions {
     // no app for rdp://, which is how Hop knows to dim the control. NOT checked: whether Windows App
     // starts a session from this URL (no Windows App and no Windows PC were available). Microsoft
     // documents the scheme for its Mac client; if Windows App ignores it, the fallback in the
-    // add-windows-linux-hosts design is to write a .rdp file and open that.
+    // plan is to write a .rdp file ("full address:s:<host>") and open that.
     private static let windowsAppPage = URL(string: "macappstore://apps.apple.com/app/id1295203466")!
 
     /// Whether any app on this Mac opens Remote Desktop connections.
