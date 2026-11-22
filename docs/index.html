@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hop: a menu-bar launcher for your remote Macs</title>
-<meta name="description" content="Hop is a tiny macOS menu-bar app. One click to Screen Share, SSH or open files on your remote Macs, with Tailscale discovery and Herdr workspaces.">
+<meta name="description" content="Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on your remote Macs, Windows PCs and Linux machines, with Tailscale discovery, a global shortcut, offline alerts and Herdr workspaces.">
 <meta property="og:title" content="Hop: a menu-bar launcher for your remote Macs">
-<meta property="og:description" content="One click to Screen Share, SSH or open files on your remote Macs, with Tailscale discovery and Herdr workspaces.">
+<meta property="og:description" content="Screen Share, SSH or open files on your remote Macs, PCs and Linux machines, with Tailscale discovery, a global shortcut, offline alerts and Herdr workspaces.">
 <meta property="og:image" content="https://sercanatalik.github.io/hop-remote-launcher/screenshots/popover-light.png">
 <meta property="og:image:width" content="800">
 <meta property="og:image:height" content="706">
@@ -73,6 +73,8 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
   .btn.primary:hover { filter: brightness(1.08); }
   .fine { font-size: 14px; color: var(--muted); }
+  .fine.new { max-width: 40em; margin: 14px auto 0; }
+  .fine.new strong { color: var(--text); }
   .skip { position: absolute; left: -9999px; }
   .skip:focus { left: 12px; top: 12px; z-index: 10; padding: 8px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
   .install .card .btn { margin-bottom: 18px; }
@@ -135,6 +137,7 @@
     <a class="brand" href="#top"><img src="icon.png" alt="">Hop</a>
     <a class="hide-s" href="#features">Features</a>
     <a class="hide-s" href="#herdr">Herdr</a>
+    <a class="hide-s" href="#keyboard">Keyboard</a>
     <a href="#install">Install</a>
     <a href="https://github.com/sercanatalik/hop-remote-launcher">GitHub</a>
   </nav>
@@ -144,13 +147,14 @@
   <div class="wrap">
     <img class="icon" src="icon.png" width="112" height="112" alt="Hop app icon">
     <h1>Every remote Mac, one click away</h1>
-    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your Tailscale network automatically, and jump into your Herdr workspaces.</p>
+    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your Tailscale network automatically, and jump into your Herdr workspaces. It reaches Windows PCs and Linux machines too.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip">Download for Mac</a>
       <a class="btn" href="#install">How to install</a>
       <a class="btn" href="https://github.com/sercanatalik/hop-remote-launcher">View on GitHub</a>
     </div>
     <p class="fine">Free and open source (MIT) · macOS 13 or later · Apple silicon and Intel · <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Release notes</a></p>
+    <p class="fine new"><strong>New in 1.1:</strong> a global shortcut and type-to-find, offline alerts, Windows and Linux computers, and hosts from your SSH config. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/tag/v1.1.0">See what changed</a></p>
 
     <div class="shots">
       <figure>
@@ -304,6 +308,8 @@ cd hop-remote-launcher
       <p><strong>Away from home.</strong> Install <a href="https://tailscale.com">Tailscale</a> on every Mac and they show up in Hop wherever you are, with no port forwarding.</p>
       <p><strong>Herdr workspaces.</strong> A Mac shows its workspaces when the Herdr desktop app has it as a machine (<strong>Settings → Machines</strong> in Herdr) under the same host name Hop uses.</p>
       <p><strong>Wake-on-LAN</strong> only works on the same local network, and needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
+      <p><strong>Windows and Linux.</strong> On a Windows PC, turn on Remote Desktop and the OpenSSH Server feature. Remote Desktop needs a remote desktop app on your Mac, such as Microsoft's free <a href="https://apps.apple.com/app/id1295203466">Windows App</a>. On Linux, run an SSH server.</p>
+      <p><strong>"Tailscale isn't running" while it is.</strong> Versions before 1.1.1 showed this when Hop was opened from Finder or at login. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Update to the latest version</a>.</p>
     </div>
   </div>
 </section>
