@@ -161,13 +161,13 @@
 <section id="features">
   <div class="wrap">
     <h2>What it does</h2>
-    <p class="intro">Click the Hop icon and every Mac you use is listed with its status: a green dot for online, a hollow ring for offline, a dashed ring while Hop is still checking.</p>
+    <p class="intro">Click the Hop icon and every Mac you use is listed with its status: a green dot for online, a hollow ring for offline, a dashed ring while Hop is still checking. The list stays quiet: point at a Mac and its Screen Share, SSH and Files buttons appear. Click its name for everything else.</p>
     <div class="cards">
       <div class="card"><h3>Screen Share</h3><p>Opens macOS's built-in Screen Sharing to that Mac.</p></div>
       <div class="card"><h3>SSH</h3><p>Opens a terminal session, with your user name if you set one.</p></div>
       <div class="card"><h3>Files</h3><p>Connects to the Mac in Finder over file sharing.</p></div>
       <div class="card"><h3>Tailscale discovery</h3><p>Every Mac on your tailnet appears by itself, with live status. No API key needed.</p></div>
-      <div class="card"><h3>Wake and Copy Address</h3><p>Send a Wake-on-LAN packet when you've set a MAC address, or copy the address.</p></div>
+      <div class="card"><h3>Wake and Copy Address</h3><p>In a Mac's detail view, send a Wake-on-LAN packet when you've set a MAC address, or copy the address.</p></div>
       <div class="card"><h3>Small and private</h3><p>One Swift file, no dependencies, no account, no telemetry. Your list stays on your Mac.</p></div>
     </div>
   </div>
@@ -179,12 +179,12 @@
       <h2>Your Herdr workspaces, on every Mac</h2>
       <p>If you run coding agents with <a href="https://herdr.dev">Herdr</a>, Hop lists the workspaces on each Mac and gets you into them. None of this appears unless Herdr is installed.</p>
       <ul>
-        <li><strong>Open</strong> shows a workspace in the Herdr desktop app.</li>
-        <li><strong>New Tab</strong> adds a tab with a new terminal, in the workspace's own folder.</li>
+        <li><strong>Open</strong> shows a workspace in the Herdr desktop app. In the panel, click the workspace's name.</li>
+        <li><strong>New Tab</strong> adds a tab with a new terminal, in the workspace's own folder. In the panel, click its <strong>+</strong>.</li>
         <li><strong>New Workspace</strong> creates one on that Mac in a single click, named after the Mac, with no prompt.</li>
-        <li><strong>Open Herdr in Terminal</strong> attaches the Herdr terminal app to the Mac.</li>
+        <li><strong>Open Herdr in Terminal</strong> attaches the Herdr terminal app to the Mac. It is in the <strong>…</strong> menu of a Mac's detail view.</li>
       </ul>
-      <p>Hop also shows what your agents are doing. The menu-bar icon counts the agents that are <span class="blocked">blocked</span> and waiting for you, and a banner takes you straight to them.</p>
+      <p>Hop also shows what your agents are doing. The menu-bar icon counts the agents that are <span class="blocked">blocked</span> and waiting for you, and a banner takes you straight to them. Each workspace shows its own counts, such as "1 working, 1 blocked".</p>
     </div>
     <picture>
       <source srcset="screenshots/mac-detail-dark.png" media="(prefers-color-scheme: dark)">
@@ -206,7 +206,7 @@
         <li><strong>Mute it for 8 hours or 1 week.</strong> The mute ends by itself.</li>
         <li><strong>Turn it off.</strong> It stays off until you turn it back on.</li>
       </ul>
-      <p>While muted or off, Hop shows no agent status anywhere. Your workspaces and their buttons stay.</p>
+      <p>While muted or off, Hop shows no agent status anywhere, and a crossed-out bell appears at the top of the panel. Click it to turn status back on. Your workspaces and their buttons stay.</p>
     </div>
   </div>
 </section>
