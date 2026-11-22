@@ -17,12 +17,12 @@ plus your Herdr workspaces and agents on those Macs.</p>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/popover-dark.png">
-    <img src="docs/screenshots/popover-light.png" width="380" alt="The Hop panel: a banner for a waiting agent, then three Macs with status marks; the Studio Mac lists its Herdr workspaces, each with its agent status and a plus button for a new tab">
+    <img src="docs/screenshots/popover-light.png" width="380" alt="The Hop panel: a banner for a waiting agent, then three Macs with status marks; the Studio Mac lists its Herdr workspaces, each with its agent status and a plus button for a new tab. Manage Macs and Quit Hop are at the bottom">
   </picture>
   &nbsp;&nbsp;
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mac-detail-dark.png">
-    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: Screen Share, SSH, Files and a More menu, then its Herdr workspaces with one line per agent, and the Mac's address with a copy button">
+    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: its status and response time, then Screen Share, SSH, Files and a More menu, its Herdr workspaces with one line per agent, and the Mac's address with a copy button">
   </picture>
 </p>
 
@@ -68,6 +68,13 @@ Phones, tablets and TVs on your tailnet are never listed.
 Set a global shortcut under **Shortcut** in the Manage Macs toolbar (⌃⌥Space, ⌃⌥H or ⌥⌘H; off by default) to open the panel from any app. Press it again to close.
 
 With the panel open, just type to filter the list by name or address. While you type:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/keyboard-dark.png">
+    <img src="docs/screenshots/keyboard-light.png" width="380" alt="The Hop panel filtered by the typed text mac: MacBook Air is outlined with its three buttons showing, and a line at the bottom names the keys">
+  </picture>
+</p>
 
 | Key | Does |
 |---|---|
