@@ -1711,9 +1711,9 @@ struct MacDetailView: View {
             HStack(spacing: 6) {
                 let desktop = store.desktopProblem(m)
                 Button { Popover.close(); Actions.desktop(m) } label: {
-                    Label(m.platform.desktopName, systemImage: m.platform.desktopSymbol).fixedSize()
+                    Label(m.platform.desktopName, systemImage: m.platform.desktopSymbol)
+                        .fixedSize().frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
                 .opacity(desktop == nil ? 1 : 0.45)
                 .help(desktop ?? "\(m.platform.desktopName) \(m.name)")
                 .accessibilityLabel(m.platform.desktopName + (desktop.map { ". \($0)" } ?? ""))
