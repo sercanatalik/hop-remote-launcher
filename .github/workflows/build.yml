@@ -5,6 +5,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -18,8 +20,14 @@ jobs:
 
       - name: Set version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          fi
+          if [[ -n "${TAG:-}" ]]; then
+            echo "TAG=$TAG" >> "$GITHUB_ENV"
+            echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
           else
             echo "VERSION=0.0.0-dev.${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           fi
@@ -40,8 +48,14 @@ jobs:
           name: Hop
           path: Hop.zip
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # A release published on GitHub (or a pushed v* tag) gets Hop.zip attached.
+      - name: Attach to release
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" Hop.zip --title "Hop $VERSION" --generate-notes
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" Hop.zip --clobber
+          else
+            gh release create "$TAG" Hop.zip --title "Hop $VERSION" --generate-notes
+          fi
