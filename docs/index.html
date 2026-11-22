@@ -3,20 +3,108 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hop: a menu-bar launcher for your remote Macs</title>
-<meta name="description" content="Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on your remote Macs, Windows PCs and Linux machines, with Tailscale discovery, a global shortcut, offline alerts and Herdr workspaces.">
-<meta property="og:title" content="Hop: a menu-bar launcher for your remote Macs">
-<meta property="og:description" content="Screen Share, SSH or open files on your remote Macs, PCs and Linux machines, with Tailscale discovery, a global shortcut, offline alerts and Herdr workspaces.">
+<title>Hop — macOS Menu Bar Remote Desktop, Tailscale & SSH Launcher</title>
+<meta name="description" content="Hop is a lightweight, open-source macOS menu bar app for 1-click Screen Sharing, SSH, and file access across remote Macs, PCs, and Tailscale network.">
+<meta name="keywords" content="macOS menu bar, mac screen sharing, tailscale mac, ssh launcher mac, remote desktop mac, wake on lan, herdr, open source mac utility">
+<!-- Google Search Console verification: uncomment and replace with your token -->
+<!-- <meta name="google-site-verification" content="YOUR_GSC_VERIFICATION_TOKEN"> -->
+<meta property="og:title" content="Hop — macOS Menu Bar Remote Desktop, Tailscale & SSH Launcher">
+<meta property="og:description" content="1-click Screen Sharing, SSH, and file access across remote Macs, Windows PCs, Linux machines, and your Tailscale network.">
 <meta property="og:image" content="https://sercanatalik.github.io/hop-remote-launcher/screenshots/popover-light.png">
 <meta property="og:image:width" content="800">
 <meta property="og:image:height" content="706">
-<meta property="og:image:alt" content="The Hop panel listing three Macs with their status and Herdr workspaces">
+<meta property="og:image:alt" content="The Hop panel listing remote Macs with their status and Herdr workspaces">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://sercanatalik.github.io/hop-remote-launcher/">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Hop — macOS Menu Bar Remote Desktop, Tailscale & SSH Launcher">
+<meta name="twitter:description" content="1-click Screen Sharing, SSH, and file access across remote Macs, Windows PCs, Linux machines, and your Tailscale network.">
+<meta name="twitter:image" content="https://sercanatalik.github.io/hop-remote-launcher/screenshots/popover-light.png">
 <meta name="color-scheme" content="light dark">
 <link rel="canonical" href="https://sercanatalik.github.io/hop-remote-launcher/">
 <link rel="icon" href="icon.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://sercanatalik.github.io/hop-remote-launcher/#software",
+      "name": "Hop",
+      "operatingSystem": "macOS 13.0 or later",
+      "applicationCategory": "UtilitiesApplication",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "description": "A tiny macOS menu-bar launcher for Screen Sharing, SSH, shared files, Wake-on-LAN, and automatic Tailscale discovery.",
+      "downloadUrl": "https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip",
+      "screenshot": "https://sercanatalik.github.io/hop-remote-launcher/screenshots/popover-light.png",
+      "author": {
+        "@type": "Person",
+        "name": "Sercan Atalik",
+        "url": "https://github.com/sercanatalik"
+      },
+      "license": "https://opensource.org/licenses/MIT"
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://sercanatalik.github.io/hop-remote-launcher/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is Hop and how does it work?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Hop is a native macOS menu-bar utility written in a single Swift file. It gives you 1-click or keyboard-driven access to Screen Sharing (vnc://), SSH terminal sessions (ssh://), Finder File Sharing (smb://), and Windows Remote Desktop without needing to open separate launcher apps."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does automatic Tailscale discovery work?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Hop reads status directly from the Tailscale app already installed on your Mac. It automatically discovers every Mac, Windows PC, and Linux box on your tailnet with live online/offline indicators, requiring no Tailscale API keys or tokens."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Hop work remotely over the internet?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. When your remote machines run Tailscale, Hop connects to them anywhere in the world through your encrypted private tailnet without opening ports or configuring port forwarding on your router."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I bypass the macOS Gatekeeper warning on first launch?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Because Hop is an independent open-source project without Apple Developer notarization, macOS blocks it the first time. You can go to System Settings → Privacy & Security and click Open Anyway, or run 'xattr -dr com.apple.quarantine /Applications/Hop.app' in Terminal."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does Hop compare to apps like Screens 5 or Jump Desktop?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Hop is a featherweight launcher, not a heavy remote desktop canvas client. It triggers macOS's fast built-in Screen Sharing app, native Terminal, and Finder file sharing. It consumes virtually zero battery and memory, has no subscription, and is 100% free and open-source."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Hop collect telemetry, analytics, or require an account?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Hop has zero telemetry, no tracking, no external network communication, and requires no account. Your saved hosts list stays strictly on your Mac in ~/Library/Application Support/Hop/hosts.json."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
 <style>
   :root {
     --bg: #fbfbfa;
@@ -124,6 +212,16 @@
   .notes { max-width: 44em; color: var(--muted); }
   .notes strong { color: var(--text); }
 
+  .faq { display: flex; flex-direction: column; gap: 14px; max-width: 740px; margin-top: 8px; }
+  details { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; transition: border-color .15s ease; }
+  details:hover { border-color: var(--muted); }
+  details[open] { border-color: var(--accent); }
+  summary { font-weight: 650; font-size: 17px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; user-select: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; font-size: 20px; font-weight: 400; color: var(--muted); margin-left: 12px; }
+  details[open] summary::after { content: "−"; }
+  details p { margin: 12px 0 0; color: var(--muted); font-size: 16px; line-height: 1.6; }
+
   footer { border-top: 1px solid var(--line); padding: 28px 0 44px; font-size: 14px; color: var(--muted); }
   footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; }
   footer span { margin-right: auto; }
@@ -139,6 +237,7 @@
     <a class="hide-s" href="#herdr">Herdr</a>
     <a class="hide-s" href="#keyboard">Keyboard</a>
     <a href="#install">Install</a>
+    <a class="hide-s" href="#faq">FAQ</a>
     <a href="https://github.com/sercanatalik/hop-remote-launcher">GitHub</a>
   </nav>
 </div>
@@ -310,6 +409,39 @@ cd hop-remote-launcher
       <p><strong>Wake-on-LAN</strong> only works on the same local network, and needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
       <p><strong>Windows and Linux.</strong> On a Windows PC, turn on Remote Desktop and the OpenSSH Server feature. Remote Desktop needs a remote desktop app on your Mac, such as Microsoft's free <a href="https://apps.apple.com/app/id1295203466">Windows App</a>. On Linux, run an SSH server.</p>
       <p><strong>"Tailscale isn't running" while it is.</strong> Versions before 1.1.1 showed this when Hop was opened from Finder or at login. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Update to the latest version</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>Frequently asked questions</h2>
+    <p class="intro">Quick answers to common questions about Hop, remote access, Tailscale discovery, and security.</p>
+    <div class="faq">
+      <details>
+        <summary>What is Hop and how does it work?</summary>
+        <p>Hop is a native macOS menu-bar utility written in a single Swift file. It gives you 1-click or keyboard-driven access to Screen Sharing (<code>vnc://</code>), SSH terminal sessions (<code>ssh://</code>), Finder File Sharing (<code>smb://</code>), and Windows Remote Desktop without needing to open separate launcher apps.</p>
+      </details>
+      <details>
+        <summary>How does automatic Tailscale discovery work?</summary>
+        <p>Hop reads status directly from the Tailscale app already installed on your Mac. It automatically discovers every Mac, Windows PC, and Linux box on your tailnet with live online/offline indicators. No Tailscale API keys, tokens, or network configuration are required.</p>
+      </details>
+      <details>
+        <summary>Does Hop work remotely over the internet?</summary>
+        <p>Yes. When your remote machines run Tailscale, Hop connects to them anywhere in the world through your encrypted private tailnet without opening ports or configuring port forwarding on your router.</p>
+      </details>
+      <details>
+        <summary>How do I bypass the macOS Gatekeeper warning on first launch?</summary>
+        <p>Because Hop is an independent open-source project without Apple Developer notarization, macOS blocks it the first time. You can go to <strong>System Settings → Privacy &amp; Security</strong> and click <strong>Open Anyway</strong>, or run <code>xattr -dr com.apple.quarantine /Applications/Hop.app</code> in your terminal.</p>
+      </details>
+      <details>
+        <summary>How does Hop compare to apps like Screens 5 or Jump Desktop?</summary>
+        <p>Hop is a featherweight launcher, not a heavy remote desktop canvas client. It triggers macOS's fast built-in Screen Sharing app, native Terminal, and Finder file sharing. It consumes virtually zero battery and memory, has no subscription, and is 100% free and open-source.</p>
+      </details>
+      <details>
+        <summary>Does Hop collect telemetry, analytics, or require an account?</summary>
+        <p>No. Hop has zero telemetry, no tracking, no external network communication, and requires no account. Your saved hosts list stays strictly on your Mac in <code>~/Library/Application Support/Hop/hosts.json</code>.</p>
+      </details>
     </div>
   </div>
 </section>

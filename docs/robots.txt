@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sercanatalik.github.io/hop-remote-launcher/sitemap.xml
