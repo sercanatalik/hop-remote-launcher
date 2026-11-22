@@ -45,6 +45,12 @@ Macs live in two groups:
 - **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name.
 - **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. My Macs is shown once you have saved one.
 
+### Hosts from your SSH config
+
+If you keep machines in `~/.ssh/config`, Manage Macs lists them under **From SSH config**; click the **+** beside one to add it to My Macs with its name, address and user filled in. SSH to a Mac added this way goes through its entry in the file, so its port, key and jump host apply. Hop only reads the file.
+
+A host that is only reachable through a jump host shows as offline in Hop, and its Screen Share and Files won't connect, but SSH still works.
+
 ### Windows and Linux computers
 
 Hop also reaches computers that are not Macs. Turn off **Only Macs** in the Manage Macs toolbar's Tailscale menu to list the Windows and Linux computers on your tailnet, or add one yourself and set its **Platform** in Manage Macs.

@@ -54,9 +54,11 @@ struct RemoteMac: Codable, Identifiable, Hashable {
     var user: String = ""      // optional account name on the remote Mac
     var mac: String = ""       // optional MAC address for Wake-on-LAN (aa:bb:cc:dd:ee:ff)
     var platform: Platform = .mac   // absent in host lists saved before platforms existed
+    var sshAlias: String = ""  // its entry in ~/.ssh/config, when it was added from there
+    var sshPort: Int = 0       // that entry's SSH port; 0 means the usual 22
     var isTailnet = false      // discovered from Tailscale (not saved)
 
-    enum CodingKeys: String, CodingKey { case id, name, host, user, mac, platform }
+    enum CodingKeys: String, CodingKey { case id, name, host, user, mac, platform, sshAlias, sshPort }
 
     init() {}
 
@@ -68,6 +70,125 @@ struct RemoteMac: Codable, Identifiable, Hashable {
         user = (try? c.decode(String.self, forKey: .user)) ?? ""
         mac  = (try? c.decode(String.self, forKey: .mac)) ?? ""
         platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .mac
+        sshAlias = (try? c.decode(String.self, forKey: .sshAlias)) ?? ""
+        sshPort  = (try? c.decode(Int.self, forKey: .sshPort)) ?? 0
+    }
+}
+
+// MARK: - SSH configuration
+
+/// One named host from the user's SSH configuration.
+struct SSHHost: Identifiable, Hashable {
+    let alias: String
+    var hostName: String?
+    var user: String?
+    var port: Int?
+    var id: String { alias }
+}
+
+/// Reads host names out of ~/.ssh/config. It only decides which names to offer; the connection itself
+/// is made by `ssh` through the alias, so `ssh` stays the judge of what the file means.
+enum SSHConfig {
+    static var defaultPath: String { NSHomeDirectory() + "/.ssh/config" }
+
+    /// The named hosts in the file and the files it includes, in file order. Names with wildcards are
+    /// left out and `Match` blocks are skipped. Nil when there is no file.
+    static func hosts(at path: String = defaultPath) -> [SSHHost]? {
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        var found: [SSHHost] = []
+        var index: [String: Int] = [:]
+        var earlier: [SSHHost] = []       // the defaults already set when each host was first named
+        var defaults = SSHHost(alias: "*")
+        var current: [String] = []        // aliases the lines being read apply to
+        var inDefaults = true             // before the first Host line, or under "Host *"
+        var skipping = false              // inside a Match block
+        read(path, depth: 0, found: &found, index: &index, earlier: &earlier, defaults: &defaults,
+             current: &current, inDefaults: &inDefaults, skipping: &skipping)
+        // ssh keeps the first value it meets: a default set above a host's block wins over the block,
+        // and a default set below it only fills what the block left out.
+        return zip(found, earlier).map { h, pre in
+            var h = h
+            h.hostName = pre.hostName ?? h.hostName ?? defaults.hostName
+            h.user = pre.user ?? h.user ?? defaults.user
+            h.port = pre.port ?? h.port ?? defaults.port
+            return h
+        }
+    }
+
+    /// Splits a line's value into words, keeping a double-quoted run together.
+    private static func words(_ value: String) -> [String] {
+        var out: [String] = []
+        var word = ""
+        var quoted = false
+        for ch in value {
+            if ch == "\"" { quoted.toggle() }
+            else if (ch == " " || ch == "\t") && !quoted { if !word.isEmpty { out.append(word); word = "" } }
+            else { word.append(ch) }
+        }
+        if !word.isEmpty { out.append(word) }
+        return out
+    }
+
+    private static func read(_ path: String, depth: Int, found: inout [SSHHost], index: inout [String: Int],
+                             earlier: inout [SSHHost], defaults: inout SSHHost, current: inout [String], inDefaults: inout Bool, skipping: inout Bool) {
+        guard depth < 8, let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+            // "Keyword value", "Keyword=value" or "Keyword = value"
+            let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true) { $0 == " " || $0 == "\t" || $0 == "=" }
+            guard parts.count == 2 else { continue }
+            let key = parts[0].lowercased()
+            let rest = parts[1].trimmingCharacters(in: CharacterSet(charactersIn: " \t="))
+            let value = words(rest).first ?? ""
+            switch key {
+            case "host":
+                skipping = false
+                let names = words(rest)
+                inDefaults = names == ["*"]
+                current = names.filter { !$0.contains("*") && !$0.contains("?") && !$0.hasPrefix("!") }
+                for name in current where index[name] == nil {
+                    index[name] = found.count
+                    found.append(SSHHost(alias: name))
+                    earlier.append(defaults)
+                }
+            case "match":
+                skipping = true
+                inDefaults = false
+                current = []
+            case "include":
+                for pattern in words(rest) {
+                    for file in expand(pattern) {
+                        read(file, depth: depth + 1, found: &found, index: &index, earlier: &earlier, defaults: &defaults,
+                             current: &current, inDefaults: &inDefaults, skipping: &skipping)
+                    }
+                }
+            case "hostname", "user", "port":
+                guard !skipping else { continue }
+                func set(_ h: inout SSHHost) {      // ssh keeps the first value it meets
+                    switch key {
+                    case "hostname": if h.hostName == nil { h.hostName = value }
+                    case "user":     if h.user == nil { h.user = value }
+                    default:         if h.port == nil { h.port = Int(value) }
+                    }
+                }
+                if inDefaults { set(&defaults) }
+                for name in current { if let i = index[name] { set(&found[i]) } }
+            default:
+                continue
+            }
+        }
+    }
+
+    /// An Include path: relative to ~/.ssh, with ~ and * expanded.
+    private static func expand(_ pattern: String) -> [String] {
+        var p = pattern
+        if p.hasPrefix("~") { p = NSHomeDirectory() + p.dropFirst() }
+        else if !p.hasPrefix("/") { p = NSHomeDirectory() + "/.ssh/" + p }
+        var g = glob_t()
+        defer { globfree(&g) }
+        guard glob(p, 0, nil, &g) == 0 else { return [] }
+        return (0..<Int(g.gl_pathc)).compactMap { g.gl_pathv[$0].map { String(cString: $0) } }
     }
 }
 
@@ -606,6 +727,8 @@ final class KeyNav: ObservableObject {
 final class Store: ObservableObject {
     @Published var hosts: [RemoteMac] = [] { didSet { save() } }
     @Published var online: [UUID: Bool] = [:]
+    /// Hosts named in ~/.ssh/config that are not saved yet; nil when there is no such file.
+    @Published var sshConfigHosts: [SSHHost]?
     /// The service ports each host accepted at its last check. No entry means not checked yet.
     @Published var services: [UUID: Set<UInt16>] = [:]
 
@@ -717,9 +840,9 @@ final class Store: ObservableObject {
         let quiet = quietNextCheck
         quietNextCheck = false
         for m in hosts where !m.host.trimmingCharacters(in: .whitespaces).isEmpty {
-            let id = m.id, name = m.name, host = m.host.trimmingCharacters(in: .whitespaces)
+            let id = m.id, name = m.name, host = m.host.trimmingCharacters(in: .whitespaces), sshPort = m.sshPort
             Task {
-                let open = await Probe.services(host: host)
+                let open = await Probe.services(host: host, sshPort: sshPort)
                 let up = !open.isEmpty      // online when any service answers
                 self.online[id] = up
                 self.services[id] = Set(open.keys)
@@ -757,6 +880,33 @@ final class Store: ObservableObject {
                 alertsDeniedPrompt = true
             }
         }
+    }
+
+    // MARK: SSH configuration
+
+    /// Reads ~/.ssh/config and keeps the hosts that are not in My Macs yet. Called when the Manage Macs
+    /// window opens and on its Refresh, not on the timer.
+    func refreshSSHConfig() {
+        guard let all = SSHConfig.hosts() else { sshConfigHosts = nil; return }
+        let aliases = Set(hosts.map { $0.sshAlias.lowercased() })
+        let addresses = Set(hosts.map { $0.host.lowercased().trimmingCharacters(in: .whitespaces) })
+        sshConfigHosts = all.filter {
+            !aliases.contains($0.alias.lowercased()) && !addresses.contains($0.alias.lowercased())
+        }
+    }
+
+    /// Saves a host from the SSH configuration to My Macs, remembering its entry so SSH can use it.
+    func add(_ h: SSHHost) -> UUID {
+        var m = RemoteMac()
+        m.name = h.alias
+        m.host = h.hostName ?? h.alias
+        m.user = h.user ?? ""
+        m.sshAlias = h.alias
+        m.sshPort = h.port ?? 0
+        hosts.append(m)
+        refreshSSHConfig()
+        refresh()
+        return m.id
     }
 
     // MARK: Quick open
@@ -929,6 +1079,7 @@ final class Store: ObservableObject {
         hosts.removeAll { $0.id == id }
         online[id] = nil
         refreshTailscale()
+        if sshConfigHosts != nil { refreshSSHConfig() }
     }
 }
 
@@ -953,9 +1104,10 @@ enum Probe {
     static let all: [UInt16] = [vnc, ssh, smb, rdp]
 
     /// Checks every service port at once; the result maps each port that answered to its time in ms.
-    static func services(host: String) async -> [UInt16: Int] {
-        await withTaskGroup(of: (UInt16, Int?).self) { group in
-            for port in all { group.addTask { (port, await timed(host: host, port: port)) } }
+    static func services(host: String, sshPort: Int = 0) async -> [UInt16: Int] {
+        let sshOn = (1...65535).contains(sshPort) ? UInt16(sshPort) : ssh   // a config entry's own port
+        return await withTaskGroup(of: (UInt16, Int?).self) { group in
+            for port in all { group.addTask { (port, await timed(host: host, port: port == ssh ? sshOn : port)) } }
             var open: [UInt16: Int] = [:]
             for await (port, ms) in group { if let ms { open[port] = ms } }
             return open
@@ -1054,7 +1206,28 @@ enum Actions {
     static func desktop(_ m: RemoteMac) {
         if m.platform == .windows { remoteDesktop(m) } else { screenShare(m) }
     }
-    static func ssh(_ m: RemoteMac)         { open("ssh", m) }
+    /// SSH. A Mac added from ~/.ssh/config connects through its entry there, so the port, key and jump
+    /// host in the file apply; if the entry is gone, or for any other Mac, it connects to the address.
+    static func ssh(_ m: RemoteMac) {
+        guard let u = sshURL(m, configured: SSHConfig.hosts() ?? []) else { NSSound.beep(); return }
+        NSWorkspace.shared.open(u)
+    }
+
+    static func sshURL(_ m: RemoteMac, configured: [SSHHost]) -> URL? {
+        var c = URLComponents()
+        c.scheme = "ssh"
+        if !m.sshAlias.isEmpty, configured.contains(where: { $0.alias == m.sshAlias }) {
+            c.host = m.sshAlias          // ssh fills in user, port and the rest from the entry
+            return c.url
+        }
+        let host = m.host.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty else { return nil }
+        c.host = host
+        let user = m.user.trimmingCharacters(in: .whitespaces)
+        if !user.isEmpty { c.user = user }
+        if (1...65535).contains(m.sshPort), m.sshPort != 22 { c.port = m.sshPort }
+        return c.url
+    }
     static func files(_ m: RemoteMac)       { open("smb", m) }
 
     static func copyAddress(_ m: RemoteMac) {
@@ -2017,6 +2190,30 @@ struct ManagerView: View {
                         }
                     }
                 }
+                if let found = store.sshConfigHosts {
+                    Section("From SSH config") {
+                        ForEach(found) { h in
+                            HStack(spacing: 6) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(h.alias)
+                                    if let name = h.hostName, name != h.alias {
+                                        Text(name).font(.caption).foregroundStyle(.secondary)
+                                            .lineLimit(1).truncationMode(.middle)
+                                    }
+                                }
+                                Spacer(minLength: 4)
+                                Button { selection = store.add(h) } label: { Image(systemName: "plus.circle") }
+                                    .buttonStyle(.borderless)
+                                    .help("Add \(h.alias) to My Macs")
+                                    .accessibilityLabel("Add \(h.alias) to My Macs")
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        if found.isEmpty {
+                            Text("Every host is already in My Macs").foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 240)
             .safeAreaInset(edge: .bottom) {
@@ -2029,8 +2226,8 @@ struct ManagerView: View {
                     .disabled(!store.isSaved(selection))
                     .help("Remove from My Macs")
                     Spacer()
-                    Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                        .help("Refresh status and Tailscale devices")
+                    Button { store.refresh(); store.refreshSSHConfig() } label: { Image(systemName: "arrow.clockwise") }
+                        .help("Refresh status, Tailscale devices and SSH config hosts")
                 }
                 .buttonStyle(.borderless)
                 .padding(8)
@@ -2143,7 +2340,7 @@ struct ManagerView: View {
             }
         }
         .frame(minWidth: 680, minHeight: 380)
-        .onAppear { store.refresh() }
+        .onAppear { store.refresh(); store.refreshSSHConfig() }
         .alert("Notifications are turned off for Hop", isPresented: $store.alertsDeniedPrompt) {
             Button("Open System Settings…") { Alerts.openSettings() }
             Button("OK", role: .cancel) {}
