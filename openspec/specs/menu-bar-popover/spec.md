@@ -33,7 +33,7 @@ The popover SHALL list saved Macs under "My Macs" and discovered Tailscale Macs 
 - **THEN** the "Tailscale" group shows a single button that opens or installs Tailscale, with the reason
 
 ### Requirement: Mac rows offer one-click connection actions
-Each Mac row SHALL offer Screen Share, SSH and Files as one-click buttons, each with an accessible label naming the action and the Mac. The buttons SHALL be shown while the pointer is over the row or keyboard focus is on one of them, and SHALL otherwise be hidden. The three actions SHALL be available to assistive technology on every row whether or not the buttons are shown.
+Each Mac row SHALL offer Screen Share, SSH and Files as one-click buttons, each with an accessible label naming the action and the Mac. The buttons SHALL be shown while the pointer is over the row or keyboard focus is on one of them, and SHALL otherwise be hidden. The three actions SHALL be available to assistive technology on every row whether or not the buttons are shown. On a Windows host's row, Remote Desktop SHALL take the place of Screen Share.
 
 #### Scenario: Row at rest
 - **WHEN** the pointer is not over a Mac's row and none of its buttons has keyboard focus
@@ -51,8 +51,12 @@ Each Mac row SHALL offer Screen Share, SSH and Files as one-click buttons, each 
 - **WHEN** the user looks at a Tailscale Mac's row
 - **THEN** the row offers no "Add to My Macs" control, and the action is offered in that Mac's detail view
 
+#### Scenario: Windows host row
+- **WHEN** the user moves the pointer over a Windows host's row
+- **THEN** Remote Desktop, SSH and Files buttons appear, and no Screen Share button
+
 ### Requirement: Each Mac has a detail view
-Choosing a Mac's row SHALL show a detail view inside the popover for that Mac, with a control to return to the list. The detail view SHALL offer Screen Share, SSH, Files and Copy Address, SHALL offer Wake when the Mac has a MAC address, SHALL offer "Add to My Macs" when the Mac is a Tailscale Mac, and SHALL show the Mac's address.
+Choosing a Mac's row SHALL show a detail view inside the popover for that Mac, with a control to return to the list. The detail view SHALL offer Screen Share, SSH, Files and Copy Address, SHALL offer Wake when the Mac has a MAC address, SHALL offer "Add to My Macs" when the Mac is a Tailscale Mac, and SHALL show the Mac's address. In a Windows host's detail view, Remote Desktop SHALL take the place of Screen Share.
 
 #### Scenario: Opening and leaving the detail view
 - **WHEN** the user chooses a Mac's row and then the back control
@@ -70,19 +74,27 @@ Choosing a Mac's row SHALL show a detail view inside the popover for that Mac, w
 - **WHEN** the user chooses "Add to My Macs" in a Tailscale Mac's detail view
 - **THEN** that Mac moves to "My Macs", the popover stays open and the detail view shows the saved Mac
 
+#### Scenario: Windows host detail view
+- **WHEN** the user opens the detail view of a Windows host
+- **THEN** Remote Desktop is offered as the primary action, with SSH, Files and Copy Address
+
 ### Requirement: App-level actions remain available
-The popover SHALL offer Refresh Status in its header, and Manage Macs, Open Screen Sharing, Hop on GitHub, Report an Issue, About Hop and Quit Hop in the header's "More" menu. Refresh Status, Manage Macs and Quit Hop SHALL keep their keyboard shortcuts (Command-R, Command-comma, Command-Q) while the popover is open, in the Mac list and in a Mac's detail view.
+The popover SHALL offer Refresh Status in its header, and Open Screen Sharing, Hop on GitHub, Report an Issue and About Hop in the header's "More" menu. Manage Macs and Quit Hop SHALL be offered as visible controls at the bottom of the Mac list, each shown with its keyboard shortcut, and not inside a menu. Refresh Status, Manage Macs and Quit Hop SHALL keep their keyboard shortcuts (Command-R, Command-comma, Command-Q) while the popover is open, in the Mac list and in a Mac's detail view.
 
 #### Scenario: Refreshing from the keyboard
 - **WHEN** the popover is open and the user presses Command-R
 - **THEN** Hop refreshes the status of every Mac
 
 #### Scenario: Opening the Manage window
-- **WHEN** the user chooses "Manage Macs…" from the "More" menu
+- **WHEN** the user chooses "Manage Macs…" at the bottom of the Mac list
 - **THEN** the Manage Macs window opens in front and the popover closes
 
 #### Scenario: Quitting from a detail view
 - **WHEN** a Mac's detail view is showing and the user presses Command-Q
+- **THEN** Hop quits
+
+#### Scenario: Quitting from the Mac list
+- **WHEN** the Mac list is showing and the user chooses "Quit Hop" at the bottom of the popover
 - **THEN** Hop quits
 
 ### Requirement: The popover closes after launching something
