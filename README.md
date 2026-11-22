@@ -25,7 +25,7 @@ plus your Herdr workspaces and agents.</p>
   &nbsp;&nbsp;
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mac-detail-dark.png">
-    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: its status and response time, then Screen Share, SSH, Files and a More menu, its Herdr workspaces with one line per agent, and the Mac's address with a copy button">
+    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: its status and response time, then Screen Share, SSH, Files and a More menu, its Herdr workspaces, the first with a rename pencil beside its name, with one line per agent, and the Mac's address with a copy button">
   </picture>
 </p>
 

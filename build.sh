@@ -6,14 +6,14 @@
 #
 # Environment:
 #   UNIVERSAL=1      build one app for both Apple silicon and Intel
-#   VERSION=1.2.0    version shown in About (default: 1.1.1)
+#   VERSION=1.3.0    version shown in About (default: 1.2.0)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 command -v swiftc >/dev/null || { echo "swiftc not found. Run: xcode-select --install"; exit 1; }
 
 APP="build/Hop.app"
-VERSION="${VERSION:-1.1.1}"
+VERSION="${VERSION:-1.2.0}"
 MIN_OS="13.0"
 
 rm -rf "$APP"
