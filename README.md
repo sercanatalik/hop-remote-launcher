@@ -99,8 +99,9 @@ A Mac shows its Herdr workspaces when the Herdr desktop app has it as a machine 
 
 - **Open**: shows that workspace in the Herdr desktop app. In the panel, click the workspace's name.
 - **New Tab**: adds a tab with a new terminal to it, in the workspace's own folder. In the panel, click its **+**.
+- **Rename**: in a Mac's detail view, point at a workspace and click the pencil beside its name. Return saves, Esc cancels, and an empty name puts back the one Herdr takes from the folder. Hop stays in front.
 
-**New Workspace** creates a workspace on that Mac in one click. It is named after the Mac, starts in the home folder there, and asks nothing first. Rename or close workspaces in Herdr.
+**New Workspace** creates a workspace on that Mac in one click. It is named after the Mac, starts in the home folder there, and asks nothing first. Close workspaces in Herdr.
 
 **Open Herdr in Terminal** attaches the Herdr terminal app (`herdr --remote`) to the Mac in a terminal window. It is in the **…** menu of a Mac's detail view, for every Mac, when the `herdr` command is installed.
 
@@ -115,6 +116,18 @@ Hop also shows what the agents in those workspaces are doing:
 - each workspace shows counts, such as "1 working, 1 done"; a Mac's detail view lists every agent with its tab and state
 
 The states are working, blocked, done and idle. Status updates every 30 seconds and when you refresh.
+
+### Agent notifications
+
+Hop posts a macOS notification when an agent starts waiting for you. Click it, or its **Open Workspace** button, to show that workspace in Herdr; **Mute for 8 Hours** mutes agent status. When several agents start waiting at once you get one notification that counts them, and clicking it opens the Hop panel. A waiting notification leaves Notification Center once the agent is no longer waiting.
+
+The choices are in **Alerts** in the Manage Macs toolbar:
+
+- **Notify when an agent is waiting for you**: on by default
+- **Notify when an agent finishes**: off by default
+- **Stay quiet for the workspace open in Herdr**: off by default. When on, the workspace Herdr is showing does not notify while Herdr is in front, since you can already see that agent; every other workspace still does
+
+Agent notifications follow agent status: while it is muted or off there are none, and nothing is reported afterwards for what happened in the meantime. An agent that is already waiting when Hop or Herdr starts is not reported either. Hop learns about agents from the Herdr desktop app, so Herdr must be open, and a notification can arrive up to 30 seconds after the agent stopped. macOS asks whether Hop may send notifications the first time there is one to show.
 
 Agent status is on by default. Use **Agent status** in the panel's **More** menu, or in the Manage Macs toolbar, to **mute it for 8 hours or 1 week**, or turn it **off**. A mute ends by itself; off stays off until you turn it back on. While muted or off, Hop shows no agent status anywhere, a crossed-out bell at the top of the panel turns it back on, and workspaces and their buttons stay.
 

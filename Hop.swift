@@ -14,6 +14,7 @@ import ServiceManagement
 import UserNotifications
 import Carbon.HIToolbox
 import Combine
+import os
 
 // MARK: - Model
 
@@ -324,12 +325,16 @@ enum Shell {
 // remote machines. Hop drives it through its command-line tools, the same way it uses Tailscale:
 //   hc machine ls --json        the machines the desktop app knows (name, ssh target, state)
 //   herdr-app ls                spaces, tabs and terminals, each terminal with an agent status
-//   herdr-app do <command> ...  space.select / tab.new / space.new
+//   herdr-app do <command> ...  space.select / tab.new / space.new / space.rename
 //   herdr --remote <target>     the terminal app, attached to a remote machine
 //
 // Observed with Herdr desktop 0.1.x and herdr 0.9.5:
 //   `herdr-app do space.select --id <id>` prints {"ok": true} and exits 0;
 //   an unknown id prints {"error": "no such space"} and exits 1.
+//   `herdr-app do space.rename --id <id> --name <new>` (desktop 0.1.16) renames a space on a remote
+//   machine as well: {"ok": true}, exit 0, and `ls` shows the new name at once. `--name ""` puts
+//   back the name Herdr takes from the folder, with no prompt; leaving `--name` out makes Herdr ask
+//   the person, so Hop always sends it. An unknown id prints {"error": "no space \"x\""}, exit 1.
 //   `hc machine ls` and `herdr-app ls` answer from local state in about 10 ms.
 //   `herdr --remote user@host` goes straight to SSH for a host that is not a saved machine.
 //   With the desktop app quit, `herdr-app ls`, `status` and `do` all fail at once with exit 2
@@ -361,6 +366,8 @@ enum AgentState: String, CaseIterable {
 }
 
 struct HerdrAgent: Hashable {
+    /// Stays the same for as long as the terminal lives: the space id and Herdr's terminal id.
+    let key: String
     let tab: String
     let app: String
     let state: AgentState
@@ -373,6 +380,7 @@ struct HerdrSpace: Identifiable, Hashable {
     let machine: String
     let tabCount: Int
     let agents: [HerdrAgent]   // terminals that run an agent; plain shells are left out
+    var active = false         // the space the Herdr window shows
 
     var blocked: Int { agents.filter { $0.state == .blocked }.count }
 }
@@ -418,9 +426,9 @@ enum Herdr {
     }
     private struct SpaceList: Decodable {
         let spaces: [S]?
-        struct S: Decodable { let id: String?; let name: String?; let folder: String?; let machine: String?; let tabs: [T]? }
+        struct S: Decodable { let id: String?; let name: String?; let folder: String?; let machine: String?; let tabs: [T]?; let active: Bool? }
         struct T: Decodable { let name: String?; let terminals: [Term]? }
-        struct Term: Decodable { let status: String?; let app: String? }
+        struct Term: Decodable { let status: String?; let app: String?; let terminal: String? }
     }
 
     static func decodeMachines(_ data: Data) -> [HerdrMachine] {
@@ -444,28 +452,34 @@ enum Herdr {
             var agents: [HerdrAgent] = []
             for (i, t) in (s.tabs ?? []).enumerated() {
                 let tab = (t.name?.isEmpty == false) ? t.name! : String(i + 1)
-                for term in t.terminals ?? [] {
+                for (n, term) in (t.terminals ?? []).enumerated() {
                     guard let raw = term.status, let state = AgentState(rawValue: raw) else { continue }
-                    agents.append(HerdrAgent(tab: tab, app: term.app ?? "agent", state: state))
+                    // Without a terminal id, fall back to where the terminal sits.
+                    let key = (term.terminal?.isEmpty == false) ? "\(id)/\(term.terminal!)" : "\(id)/\(tab)/\(n)"
+                    agents.append(HerdrAgent(key: key, tab: tab, app: term.app ?? "agent", state: state))
                 }
             }
             out[machine, default: []].append(
-                HerdrSpace(id: id, name: name, folder: folder, machine: machine, tabCount: s.tabs?.count ?? 0, agents: agents))
+                HerdrSpace(id: id, name: name, folder: folder, machine: machine, tabCount: s.tabs?.count ?? 0, agents: agents,
+                           active: s.active ?? false))
         }
         return out
     }
 
-    static func fetch() async -> (machines: [HerdrMachine], spaces: [String: [HerdrSpace]]) {
-        guard let app = appCLI() else { return ([], [:]) }
+    /// `listed` is false when `herdr-app ls` did not answer, which is not the same as no spaces.
+    static func fetch() async -> (machines: [HerdrMachine], spaces: [String: [HerdrSpace]], listed: Bool) {
+        guard let app = appCLI() else { return ([], [:], false) }
         var machines: [HerdrMachine] = []
         if let hc = coreCLI(), let r = await Shell.run(hc, ["machine", "ls", "--json"], timeout: 3), r.ok {
             machines = decodeMachines(r.out)
         }
         var spaces: [String: [HerdrSpace]] = [:]
+        var listed = false
         if let r = await Shell.run(app, ["ls"], timeout: 3), r.ok {
             spaces = decodeSpaces(r.out)
+            listed = true
         }
-        return (machines, spaces)
+        return (machines, spaces, listed)
     }
 
     // MARK: Pure helpers
@@ -576,6 +590,58 @@ enum AgentStatusMode: Equatable {
     }
 }
 
+// MARK: - Agent notifications
+
+/// An agent as a notification names it.
+struct AgentNote: Hashable {
+    let key: String
+    let app: String
+    let tab: String
+    let spaceID: String
+    let spaceName: String
+    let macName: String
+
+    var place: String { "\(spaceName) on \(macName)" }
+}
+
+/// Decides which agent state changes are worth a notification, the way ReachTracker does for Macs.
+/// An agent seen for the first time is never news, whatever its state. A quiet check updates what
+/// Hop believes without reporting anything, so nothing is reported late.
+struct AgentTracker {
+    struct Changes: Equatable {
+        var waiting: [AgentNote] = []     // changed to blocked
+        var finished: [AgentNote] = []    // changed to done
+        var cleared: [String] = []        // keys that were blocked and no longer are, or are gone
+    }
+
+    private var states: [String: AgentState] = [:]
+
+    /// `quietSpaces` are the spaces whose changes are recorded without being reported.
+    mutating func observe(_ snapshot: [(note: AgentNote, state: AgentState)], quiet: Bool,
+                          quietSpaces: Set<String> = []) -> Changes {
+        var changes = Changes()
+        var next: [String: AgentState] = [:]
+        for (note, state) in snapshot {
+            next[note.key] = state
+            guard let before = states[note.key], before != state else { continue }
+            if before == .blocked { changes.cleared.append(note.key) }
+            guard !quiet, !quietSpaces.contains(note.spaceID) else { continue }
+            if state == .blocked { changes.waiting.append(note) }
+            if state == .done { changes.finished.append(note) }
+        }
+        for (key, before) in states where next[key] == nil && before == .blocked { changes.cleared.append(key) }
+        states = next
+        return changes
+    }
+
+    /// Forgets every agent, as when Herdr quits. Returns the keys that were blocked.
+    mutating func reset() -> [String] {
+        let blocked = states.filter { $0.value == .blocked }.map(\.key)
+        states = [:]
+        return blocked
+    }
+}
+
 // MARK: - Reachability alerts
 
 /// Decides when a saved Mac going offline or coming back is worth a notification.
@@ -623,17 +689,55 @@ private final class AlertPresenter: NSObject, UNUserNotificationCenterDelegate {
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list])
     }
+
+    /// A click on an agent notification, or one of its two buttons.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        let kind = info[Alerts.kindKey] as? String
+        let space = info[Alerts.spaceKey] as? String
+        let action = response.actionIdentifier
+        Task { @MainActor in
+            AppController.shared?.store.notificationChosen(kind: kind, space: space, action: action)
+        }
+        completionHandler()
+    }
 }
 
 enum Alerts {
     private static let presenter = AlertPresenter()
 
+    static let waitingCategory = "agent-waiting"
+    static let openAction = "open"
+    static let muteAction = "mute"
+    static let kindKey = "kind"
+    static let spaceKey = "space"
+    static let summaryID = "agent-waiting-summary"
+    static func waitingID(_ key: String) -> String { "agent-waiting-" + key }
+
+    /// Set once: the delegate, and the two buttons a waiting notification carries.
     /// Notifications need a bundle; a bare binary has none.
-    private static var center: UNUserNotificationCenter? {
+    private static let prepared: UNUserNotificationCenter? = {
         guard Bundle.main.bundleIdentifier != nil else { return nil }
         let c = UNUserNotificationCenter.current()
         c.delegate = presenter
+        let open = UNNotificationAction(identifier: openAction, title: "Open Workspace", options: [])
+        let mute = UNNotificationAction(identifier: muteAction, title: "Mute for 8 Hours", options: [])
+        c.setNotificationCategories([
+            UNNotificationCategory(identifier: waitingCategory, actions: [open, mute], intentIdentifiers: [], options: [])
+        ])
         return c
+    }()
+
+    private static var center: UNUserNotificationCenter? { prepared }
+
+    /// Called at launch so a click on a notification that starts Hop still reaches the delegate.
+    static func prepare() { _ = prepared }
+
+    /// nil when Hop cannot post at all.
+    static func status() async -> UNAuthorizationStatus? {
+        guard let center else { return nil }
+        return await center.notificationSettings().authorizationStatus
     }
 
     static func request() async -> Bool {
@@ -646,12 +750,24 @@ enum Alerts {
         return await center.notificationSettings().authorizationStatus == .denied
     }
 
-    static func post(title: String, body: String) {
+    /// Posting again under the same `id` replaces the earlier notification.
+    static func post(title: String, subtitle: String = "", body: String, id: String? = nil,
+                     category: String? = nil, info: [String: String] = [:]) {
         guard let center else { return }
         let content = UNMutableNotificationContent()
         content.title = title
+        content.subtitle = subtitle
         content.body = body
-        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        if let category { content.categoryIdentifier = category }
+        content.userInfo = info
+        center.add(UNNotificationRequest(identifier: id ?? UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// Takes notifications back out of Notification Center.
+    static func withdraw(_ ids: [String]) {
+        guard let center, !ids.isEmpty else { return }
+        center.removeDeliveredNotifications(withIdentifiers: ids)
+        center.removePendingNotificationRequests(withIdentifiers: ids)
     }
 
     static func openSettings() {
@@ -773,6 +889,21 @@ final class Store: ObservableObject {
     @Published var alertsDenied = false
     @Published var alertsDeniedPrompt = false
     private var reach = ReachTracker()
+
+    // Agent notifications
+    @Published var notifyWaiting: Bool = UserDefaults.standard.object(forKey: "agentNotifyWaiting") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(notifyWaiting, forKey: "agentNotifyWaiting") }
+    }
+    @Published var notifyFinished: Bool = UserDefaults.standard.bool(forKey: "agentNotifyFinished") {
+        didSet { UserDefaults.standard.set(notifyFinished, forKey: "agentNotifyFinished") }
+    }
+    @Published var quietWhileHerdrInFront: Bool = UserDefaults.standard.bool(forKey: "agentQuietInFront") {
+        didSet { UserDefaults.standard.set(quietWhileHerdrInFront, forKey: "agentQuietInFront") }
+    }
+    private var agents = AgentTracker()
+    private let agentLog = Logger(subsystem: "io.github.sercanatalik.hop", category: "agents")
+    /// The agents the summary notification in Notification Center stands for.
+    private var summaryKeys = Set<String>()
 
     // Quick open
     @Published private(set) var hotkey = UserDefaults.standard.string(forKey: "quickOpenHotkey") ?? QuickOpen.off {
@@ -952,9 +1083,106 @@ final class Store: ObservableObject {
             return
         }
         Task {
-            let (machines, spaces) = await Herdr.fetch()
+            let (machines, spaces, listed) = await Herdr.fetch()
             herdrMachines = machines
             herdrSpaces = spaces
+            noteAgents(listed: listed)
+        }
+    }
+
+    // MARK: Agent notifications
+
+    /// Feeds one Herdr listing to the tracker and posts or withdraws notifications for what changed.
+    private func noteAgents(listed: Bool) {
+        guard listed else {
+            // One missed answer changes nothing. With Herdr quit, start over, so that whatever state
+            // the agents are in when it comes back is not reported as news.
+            if NSRunningApplication.runningApplications(withBundleIdentifier: Herdr.bundleID).isEmpty {
+                withdrawWaiting(agents.reset())
+            }
+            return
+        }
+        var snapshot: [(note: AgentNote, state: AgentState)] = []
+        for b in listedSpaces {
+            for a in b.space.agents {
+                let note = AgentNote(key: a.key, app: a.app, tab: a.tab, spaceID: b.space.id,
+                                     spaceName: b.space.name, macName: b.macName)
+                snapshot.append((note, a.state))
+            }
+        }
+        let herdrInFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Herdr.bundleID
+        let quiet = agentMode.resolved(at: Date()) != .on
+        // Only the workspace on screen is left out: with Herdr in front you can see that one, not the rest.
+        let shown = quietWhileHerdrInFront && herdrInFront
+            ? Set(listedSpaces.filter { $0.space.active }.map { $0.space.id }) : []
+        let changes = agents.observe(snapshot, quiet: quiet, quietSpaces: shown)
+        let states = snapshot.map { "\($0.note.key)=\($0.state.rawValue)" }.joined(separator: " ")
+        agentLog.info("check: \(states, privacy: .public) quiet=\(quiet) shown=\(shown.count) waiting=\(changes.waiting.count) finished=\(changes.finished.count) cleared=\(changes.cleared.count)")
+        withdrawWaiting(changes.cleared)
+
+        let waiting = notifyWaiting ? changes.waiting : []
+        let finished = notifyFinished ? changes.finished : []
+        guard !waiting.isEmpty || !finished.isEmpty else { return }
+        whenAllowed { [weak self] in
+            guard let self else { return }
+            if waiting.count == 1, let a = waiting.first {
+                Alerts.post(title: "\(a.app) is waiting", subtitle: a.place,
+                            body: "Tab \(a.tab) needs your answer before it can continue.",
+                            id: Alerts.waitingID(a.key), category: Alerts.waitingCategory,
+                            info: [Alerts.kindKey: "waiting", Alerts.spaceKey: a.spaceID])
+            } else if waiting.count > 1 {
+                var places: [String] = []
+                for a in waiting where !places.contains(a.place) { places.append(a.place) }
+                self.summaryKeys = Set(waiting.map(\.key))
+                Alerts.post(title: "\(waiting.count) agents are waiting", body: places.joined(separator: ", "),
+                            id: Alerts.summaryID, info: [Alerts.kindKey: "summary"])
+            }
+            for a in finished {
+                Alerts.post(title: "\(a.app) finished", subtitle: a.place, body: "Tab \(a.tab) is done.",
+                            info: [Alerts.kindKey: "finished", Alerts.spaceKey: a.spaceID])
+            }
+        }
+    }
+
+    /// Takes back the waiting notifications of agents that no longer wait, and the summary once
+    /// none of its agents does.
+    private func withdrawWaiting(_ keys: [String]) {
+        guard !keys.isEmpty else { return }
+        var ids = keys.map(Alerts.waitingID)
+        if !summaryKeys.isEmpty {
+            summaryKeys.subtract(keys)
+            if summaryKeys.isEmpty { ids.append(Alerts.summaryID) }
+        }
+        Alerts.withdraw(ids)
+    }
+
+    /// Runs `post` when Hop may notify, asking for permission the first time there is something to say.
+    private func whenAllowed(_ post: @escaping @MainActor () -> Void) {
+        Task {
+            let status = await Alerts.status()
+            agentLog.info("posting: authorization=\(status?.rawValue ?? -1)")
+            switch status {
+            case .authorized?, .provisional?:
+                alertsDenied = false
+                post()
+            case .notDetermined?:
+                if await Alerts.request() { post() } else { alertsDenied = true }
+            case .denied?:
+                alertsDenied = true
+            default:
+                break
+            }
+        }
+    }
+
+    /// A click on an agent notification or one of its buttons.
+    func notificationChosen(kind: String?, space: String?, action: String) {
+        if action == Alerts.muteAction {
+            mute(for: AgentStatusMode.eightHours)
+        } else if kind == "summary" {
+            AppController.shared?.showPopover()
+        } else if let space, action == Alerts.openAction || action == UNNotificationDefaultActionIdentifier {
+            Actions.herdrOpen(id: space, store: self)
         }
     }
 
@@ -1287,12 +1515,16 @@ enum Actions {
     // MARK: Herdr
 
     /// Runs a Herdr desktop command, starting the app first if it isn't running, then brings Herdr forward.
+    /// `launch: false` gives up when Herdr is not running; `activate: false` leaves Hop in front.
     @MainActor
-    static func herdr(_ args: [String], store: Store) {
+    static func herdr(_ args: [String], store: Store, activate: Bool = true, launch: Bool = true) {
         guard let cli = Herdr.appCLI() else { NSSound.beep(); return }
         Task { @MainActor in
             let wasRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: Herdr.bundleID).isEmpty
-            if !wasRunning { activateHerdr() }
+            if !wasRunning {
+                guard launch else { NSSound.beep(); return }
+                activateHerdr()
+            }
             // A fresh launch needs a moment before it answers; a running app gets one attempt.
             let deadline = Date().addingTimeInterval(wasRunning ? 0 : 10)
             var ok = false
@@ -1304,7 +1536,7 @@ enum Actions {
                 try? await Task.sleep(nanoseconds: 700_000_000)
             }
             if ok {
-                activateHerdr()
+                if activate { activateHerdr() } else { store.refreshHerdr() }
                 store.refreshHerdrSoon()
             } else {
                 NSSound.beep()
@@ -1319,8 +1551,18 @@ enum Actions {
         NSWorkspace.shared.openApplication(at: url, configuration: cfg)
     }
 
-    @MainActor static func herdrOpen(_ s: HerdrSpace, store: Store) {
-        herdr(["space.select", "--id", s.id], store: store)
+    @MainActor static func herdrOpen(_ s: HerdrSpace, store: Store) { herdrOpen(id: s.id, store: store) }
+
+    @MainActor static func herdrOpen(id: String, store: Store) {
+        herdr(["space.select", "--id", id], store: store)
+    }
+
+    /// Renames a space and stays in Hop. The name is always sent, because Herdr asks the person when
+    /// it is left out; an empty one puts back the name Herdr takes from the folder.
+    @MainActor static func herdrRename(_ s: HerdrSpace, to name: String, store: Store) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != s.name else { return }
+        herdr(["space.rename", "--id", s.id, "--name", trimmed], store: store, activate: false, launch: false)
     }
 
     /// The tab starts in the space's own folder; Herdr's default is whatever terminal happens to be focused.
@@ -1489,12 +1731,56 @@ struct AgentSummary: View {
 }
 
 /// A workspace with its actions. `compact` (the popover's detail view) turns New Tab into a "+" button.
+/// With `renaming` (the id of the workspace being renamed, shared by the rows of one Mac) the row
+/// offers a pencil and turns its name into a text field.
 struct WorkspaceRow: View {
     let space: HerdrSpace
     var showFolder = false
     var showSummary = true
     var compact = false
+    var renaming: Binding<String?>? = nil
     @EnvironmentObject var store: Store
+    @State private var hovering = false
+    @State private var draft = ""
+    @FocusState private var fieldFocused: Bool
+    @FocusState private var pencilFocused: Bool
+
+    private var editing: Bool { renaming?.wrappedValue == space.id }
+
+    private func startRename() {
+        draft = space.name
+        renaming?.wrappedValue = space.id
+    }
+
+    private func cancelRename() {
+        if editing { renaming?.wrappedValue = nil }
+    }
+
+    private func saveRename() {
+        guard editing else { return }
+        renaming?.wrappedValue = nil
+        Actions.herdrRename(space, to: draft, store: store)
+    }
+
+    private var renameForm: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                TextField("Folder name", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($fieldFocused)
+                    .onSubmit { saveRename() }
+                    .onExitCommand { cancelRename() }
+                    .accessibilityLabel("Name of workspace \(space.name)")
+                Button("Cancel") { cancelRename() }
+                Button("Save") { saveRename() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Text("Return saves, Esc cancels. Leave it empty to use the folder name.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .controlSize(.small)
+        .onAppear { DispatchQueue.main.async { fieldFocused = true } }
+    }
 
     private var folderText: String {
         var parts = space.folder.split(separator: "/").map(String.init)
@@ -1506,9 +1792,20 @@ struct WorkspaceRow: View {
     }
 
     var body: some View {
+        if editing { renameForm } else { row }
+    }
+
+    private var row: some View {
         HStack(spacing: compact ? 4 : 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(space.name).lineLimit(1)
+                HStack(spacing: 2) {
+                    Text(space.name).lineLimit(1)
+                    if renaming != nil {
+                        IconButton(symbol: "pencil", label: "Rename \(space.name)", size: 18) { startRename() }
+                            .focused($pencilFocused)
+                            .opacity(hovering || pencilFocused ? 1 : 0)
+                    }
+                }
                 if showFolder {
                     Text("\(folderText) · \(space.tabCount) \(space.tabCount == 1 ? "tab" : "tabs")")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -1529,6 +1826,8 @@ struct WorkspaceRow: View {
             }
         }
         .controlSize(.small)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 }
 
@@ -1589,6 +1888,9 @@ private struct AgentLine: View {
 struct HerdrBlock: View {
     let m: RemoteMac
     @EnvironmentObject var store: Store
+    /// The workspace being renamed. One for the whole block, so only one row is edited at a time,
+    /// and leaving the detail view drops it.
+    @State private var renaming: String?
 
     var body: some View {
         let spaces = store.spaces(for: m)
@@ -1608,7 +1910,7 @@ struct HerdrBlock: View {
             ForEach(Array(spaces.enumerated()), id: \.element.id) { i, s in
                 if i > 0 { Divider() }
                 VStack(alignment: .leading, spacing: 4) {
-                    WorkspaceRow(space: s, showFolder: true, showSummary: false, compact: true)
+                    WorkspaceRow(space: s, showFolder: true, showSummary: false, compact: true, renaming: $renaming)
                     if store.showAgentStatus {
                         ForEach(Array(s.agents.enumerated()), id: \.offset) { _, a in AgentLine(agent: a) }
                     }
@@ -2327,6 +2629,13 @@ struct ManagerView: View {
                     Toggle("Notify when a saved Mac goes offline or comes back",
                            isOn: Binding(get: { store.alertsEnabled }, set: { store.setAlerts($0) }))
                     Text("A Mac is reported after it misses two checks, about a minute.")
+                    if store.herdrAppInstalled {
+                        Divider()
+                        Toggle("Notify when an agent is waiting for you", isOn: $store.notifyWaiting)
+                        Toggle("Notify when an agent finishes", isOn: $store.notifyFinished)
+                        Toggle("Stay quiet for the workspace open in Herdr", isOn: $store.quietWhileHerdrInFront)
+                        Text("Agent notifications follow Agent status: muted or off, there are none.")
+                    }
                     if store.alertsDenied {
                         Divider()
                         Text("Notifications are turned off for Hop in System Settings")
@@ -2459,6 +2768,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppController.shared = self
+        Alerts.prepare()
 
         let host = NSHostingController(rootView: PopoverView().environmentObject(store))
         host.sizingOptions = [.preferredContentSize]
