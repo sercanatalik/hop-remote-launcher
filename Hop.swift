@@ -1161,6 +1161,7 @@ enum Probe {
 // MARK: - App info
 
 enum HopInfo {
+    static let siteURL = URL(string: "https://sercanatalik.github.io/hop-remote-launcher/")!
     static let repoURL = URL(string: "https://github.com/sercanatalik/hop-remote-launcher")!
     static let issuesURL = URL(string: "https://github.com/sercanatalik/hop-remote-launcher/issues/new")!
     static var version: String {
@@ -1274,8 +1275,8 @@ enum Actions {
             string: "Open source under the MIT licence.\n",
             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
         credits.append(NSAttributedString(
-            string: "github.com/sercanatalik/hop-remote-launcher",
-            attributes: [.font: NSFont.systemFont(ofSize: 11), .link: HopInfo.repoURL]))
+            string: "sercanatalik.github.io/hop-remote-launcher",
+            attributes: [.font: NSFont.systemFont(ofSize: 11), .link: HopInfo.siteURL]))
         let centered = NSMutableParagraphStyle()
         centered.alignment = .center
         credits.addAttribute(.paragraphStyle, value: centered, range: NSRange(location: 0, length: credits.length))
@@ -2470,6 +2471,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         item.button?.imagePosition = .imageLeading
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         item.button?.setAccessibilityLabel("Hop")
         self.item = item
 
@@ -2488,7 +2490,33 @@ final class AppController: NSObject, NSApplicationDelegate {
         item?.button?.title = blocked > 0 ? " \(blocked)" : ""
     }
 
-    @objc private func statusItemClicked() { togglePopover() }
+    /// A plain click toggles the popover; a right-click or Control-click shows the small app menu.
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showContextMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    private func showContextMenu() {
+        closePopover()
+        let menu = NSMenu()
+        for (title, action) in [("About Hop \(HopInfo.version)", #selector(menuAbout)),
+                                ("Hop on GitHub", #selector(menuGitHub))] {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Hop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        // The menu is attached only for this click, so a plain click keeps opening the popover.
+        item?.menu = menu
+        item?.button?.performClick(nil)
+        item?.menu = nil
+    }
+
+    @objc private func menuAbout() { Actions.showAbout() }
+    @objc private func menuGitHub() { Actions.openGitHub() }
 
     func togglePopover() {
         if popover.isShown { closePopover() } else { showPopover() }
