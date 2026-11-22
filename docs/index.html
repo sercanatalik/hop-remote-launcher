@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hop: a menu-bar launcher for your remote Macs</title>
+<meta name="description" content="Hop is a tiny macOS menu-bar app. One click to Screen Share, SSH or open files on your remote Macs, with Tailscale discovery and Herdr workspaces.">
+<meta property="og:title" content="Hop: a menu-bar launcher for your remote Macs">
+<meta property="og:description" content="One click to Screen Share, SSH or open files on your remote Macs, with Tailscale discovery and Herdr workspaces.">
+<meta property="og:image" content="https://sercanatalik.github.io/hop-remote-launcher/screenshots/popover-light.png">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #63636a;
+    --line: #e4e4e2;
+    --accent: #0a6cff;
+    --accent-text: #ffffff;
+    --code-bg: #f1f1ef;
+    --blocked: #d9691a;
+    --shadow: 0 24px 60px rgba(0, 0, 0, .14), 0 2px 8px rgba(0, 0, 0, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131314;
+      --surface: #1c1c1e;
+      --text: #f2f2f3;
+      --muted: #a0a0a8;
+      --line: #2e2e31;
+      --accent: #4c94ff;
+      --accent-text: #0b0b0c;
+      --code-bg: #232326;
+      --blocked: #f0934a;
+      --shadow: 0 24px 60px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+  nav { display: flex; align-items: center; gap: 20px; padding: 18px 0; font-size: 15px; }
+  nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; color: var(--text); margin-right: auto; }
+  nav .brand img { width: 28px; height: 28px; }
+  nav a { color: var(--muted); }
+  nav a:hover { color: var(--text); text-decoration: none; }
+
+  header.hero { text-align: center; padding: 48px 0 24px; }
+  .hero img.icon { width: 112px; height: 112px; }
+  h1 { font-size: clamp(34px, 6vw, 54px); line-height: 1.08; letter-spacing: -.025em; margin: 18px auto 14px; max-width: 16em; text-wrap: balance; }
+  .lede { font-size: clamp(18px, 2.4vw, 21px); color: var(--muted); max-width: 34em; margin: 0 auto; text-wrap: pretty; }
+  .cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 28px 0 10px; }
+  .btn { display: inline-block; padding: 11px 22px; border-radius: 999px; font-weight: 600; font-size: 16px; border: 1px solid var(--line); color: var(--text); background: var(--surface); }
+  .btn:hover { text-decoration: none; border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .fine { font-size: 14px; color: var(--muted); }
+
+  .shot { display: block; width: 100%; max-width: 400px; height: auto; border-radius: 16px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .shots { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 32px; padding: 36px 0 20px; }
+  figure { margin: 0; }
+  figcaption { font-size: 14px; color: var(--muted); text-align: center; margin-top: 14px; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: clamp(26px, 4vw, 34px); letter-spacing: -.02em; line-height: 1.15; margin: 0 0 12px; }
+  h3 { font-size: 18px; margin: 0 0 6px; }
+  section > .wrap > p.intro { color: var(--muted); max-width: 40em; margin: 0 0 28px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 400px); gap: 48px; align-items: center; }
+  .split.flip > :first-child { order: 2; }
+  .split ul { padding-left: 20px; margin: 0; }
+  .split li { margin: 8px 0; }
+  .split p { color: var(--muted); }
+  .blocked { color: var(--blocked); font-weight: 600; }
+  @media (max-width: 760px) {
+    .split { grid-template-columns: 1fr; gap: 28px; }
+    .split.flip > :first-child { order: 0; }
+    .split .shot { margin: 0 auto; }
+    nav a.hide-s { display: none; }
+  }
+
+  ol.steps { list-style: none; counter-reset: step; padding: 0; margin: 0; }
+  ol.steps > li { counter-increment: step; position: relative; padding: 0 0 22px 46px; }
+  ol.steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 30px; height: 30px; border-radius: 50%; background: var(--code-bg); border: 1px solid var(--line); font-weight: 650; font-size: 15px; display: grid; place-items: center; }
+  ol.steps p { margin: 0 0 8px; }
+  .install { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .install .card h3 { font-size: 20px; margin-bottom: 4px; }
+  .install .card > p { margin-bottom: 18px; }
+  code { font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); padding: 2px 6px; border-radius: 6px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 0 0 8px; }
+  pre code { background: none; padding: 0; }
+
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; max-width: 620px; font-size: 16px; }
+  th, td { text-align: left; padding: 10px 14px 10px 0; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 14px; }
+  .notes { max-width: 44em; color: var(--muted); }
+  .notes strong { color: var(--text); }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 44px; font-size: 14px; color: var(--muted); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  footer span { margin-right: auto; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#top"><img src="icon.png" alt="">Hop</a>
+    <a class="hide-s" href="#features">Features</a>
+    <a class="hide-s" href="#herdr">Herdr</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/sercanatalik/hop-remote-launcher">GitHub</a>
+  </nav>
+</div>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <img class="icon" src="icon.png" width="112" height="112" alt="Hop app icon">
+    <h1>Every remote Mac, one click away</h1>
+    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your Tailscale network automatically, and jump into your Herdr workspaces.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install Hop</a>
+      <a class="btn" href="https://github.com/sercanatalik/hop-remote-launcher">View on GitHub</a>
+    </div>
+    <p class="fine">Free and open source (MIT) · macOS 13 or later · Apple silicon and Intel</p>
+
+    <div class="shots">
+      <figure>
+        <picture>
+          <source srcset="screenshots/popover-dark.png" media="(prefers-color-scheme: dark)">
+          <img class="shot" src="screenshots/popover-light.png" width="400" height="479" alt="The Hop panel: a banner saying claude-code is waiting for you, then three Macs with status marks and Screen Share, SSH and Files buttons. The Studio Mac lists three Herdr workspaces with Open and New Tab buttons.">
+        </picture>
+        <figcaption>The panel that opens from the menu bar</figcaption>
+      </figure>
+      <figure>
+        <picture>
+          <source srcset="screenshots/mac-detail-dark.png" media="(prefers-color-scheme: dark)">
+          <img class="shot" src="screenshots/mac-detail-light.png" width="400" height="466" alt="The detail view for the Studio Mac: Screen Share, SSH, Files, Copy Address and Wake tiles, then its Herdr workspaces with one line per agent showing Blocked, Working or Idle.">
+        </picture>
+        <figcaption>Everything for one Mac</figcaption>
+      </figure>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="intro">Click the Hop icon and every Mac you use is listed with its status: a green dot for online, a hollow ring for offline, a dashed ring while Hop is still checking.</p>
+    <div class="cards">
+      <div class="card"><h3>Screen Share</h3><p>Opens macOS's built-in Screen Sharing to that Mac.</p></div>
+      <div class="card"><h3>SSH</h3><p>Opens a terminal session, with your user name if you set one.</p></div>
+      <div class="card"><h3>Files</h3><p>Connects to the Mac in Finder over file sharing.</p></div>
+      <div class="card"><h3>Tailscale discovery</h3><p>Every Mac on your tailnet appears by itself, with live status. No API key needed.</p></div>
+      <div class="card"><h3>Wake and Copy Address</h3><p>Send a Wake-on-LAN packet when you've set a MAC address, or copy the address.</p></div>
+      <div class="card"><h3>Small and private</h3><p>One Swift file, no dependencies, no account, no telemetry. Your list stays on your Mac.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="herdr">
+  <div class="wrap split">
+    <div>
+      <h2>Your Herdr workspaces, on every Mac</h2>
+      <p>If you run coding agents with <a href="https://herdr.dev">Herdr</a>, Hop lists the workspaces on each Mac and gets you into them. None of this appears unless Herdr is installed.</p>
+      <ul>
+        <li><strong>Open</strong> shows a workspace in the Herdr desktop app.</li>
+        <li><strong>New Tab</strong> adds a tab with a new terminal, in the workspace's own folder.</li>
+        <li><strong>New Workspace</strong> creates one on that Mac in a single click, named after the Mac, with no prompt.</li>
+        <li><strong>Open Herdr in Terminal</strong> attaches the Herdr terminal app to the Mac.</li>
+      </ul>
+      <p>Hop also shows what your agents are doing. The menu-bar icon counts the agents that are <span class="blocked">blocked</span> and waiting for you, and a banner takes you straight to them.</p>
+    </div>
+    <picture>
+      <source srcset="screenshots/mac-detail-dark.png" media="(prefers-color-scheme: dark)">
+      <img class="shot" src="screenshots/mac-detail-light.png" width="400" height="466" loading="lazy" alt="A Mac's detail view listing three Herdr workspaces, each agent with its tab and state.">
+    </picture>
+  </div>
+</section>
+
+<section id="status">
+  <div class="wrap split flip">
+    <picture>
+      <source srcset="screenshots/muted-dark.png" media="(prefers-color-scheme: dark)">
+      <img class="shot" src="screenshots/muted-light.png" width="400" height="437" loading="lazy" alt="The Hop panel with agent status muted: workspaces are still listed with Open and New Tab, and a line reads Agent status muted until Sunday 20:40 with a Turn On button.">
+    </picture>
+    <div>
+      <h2>Quiet when you want it</h2>
+      <p>Agent status is on by default. From the bottom of the panel you can:</p>
+      <ul>
+        <li><strong>Mute it for 8 hours or 1 week.</strong> The mute ends by itself.</li>
+        <li><strong>Turn it off.</strong> It stays off until you turn it back on.</li>
+      </ul>
+      <p>While muted or off, Hop shows no agent status anywhere. Your workspaces and their buttons stay.</p>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="intro">Hop needs macOS 13 or later and runs on Apple silicon and Intel Macs.</p>
+
+    <div class="install">
+      <div class="card">
+        <h3>Build from source</h3>
+        <p>Takes about a minute. You need the Xcode Command Line Tools.</p>
+        <ol class="steps">
+          <li><p>Install the Command Line Tools, if you haven't:</p>
+<pre><code>xcode-select --install</code></pre></li>
+          <li><p>Get the code, build Hop and copy it to Applications:</p>
+<pre><code>git clone https://github.com/sercanatalik/hop-remote-launcher.git
+cd hop-remote-launcher
+./build.sh --install</code></pre></li>
+          <li><p>Hop is copied to Applications and starts by itself. Its icon appears in the menu bar.</p></li>
+        </ol>
+      </div>
+
+      <div class="card">
+        <h3>Download the app</h3>
+        <p>Ready-built, for both Apple silicon and Intel.</p>
+        <ol class="steps">
+          <li><p>Get <code>Hop.zip</code> from the <a href="https://github.com/sercanatalik/hop-remote-launcher/releases">releases page</a> and unzip it.</p></li>
+          <li><p>Move <strong>Hop.app</strong> to Applications.</p></li>
+          <li><p>Hop isn't notarised by Apple yet, so macOS blocks it the first time. Try to open it once, then go to <strong>System Settings → Privacy &amp; Security</strong> and click <strong>Open Anyway</strong>. Or run:</p>
+<pre><code>xattr -dr com.apple.quarantine /Applications/Hop.app</code></pre></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="wrap">
+    <h2>Set up your remote Macs</h2>
+    <p class="intro">On each remote Mac, open <strong>System Settings → General → Sharing</strong> and turn on what you want to use.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Feature in Hop</th><th>Turn on</th></tr></thead>
+        <tbody>
+          <tr><td>Screen Share</td><td>Screen Sharing</td></tr>
+          <tr><td>SSH, Open Herdr in Terminal</td><td>Remote Login</td></tr>
+          <tr><td>Files</td><td>File Sharing</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="notes">
+      <p><strong>First launch.</strong> macOS may ask for Local Network access. Allow it, or every Mac stays marked offline.</p>
+      <p><strong>Away from home.</strong> Install <a href="https://tailscale.com">Tailscale</a> on every Mac and they show up in Hop wherever you are, with no port forwarding.</p>
+      <p><strong>Herdr workspaces.</strong> A Mac shows its workspaces when the Herdr desktop app has it as a machine (<strong>Settings → Machines</strong> in Herdr) under the same host name Hop uses.</p>
+      <p><strong>Wake-on-LAN</strong> only works on the same local network, and needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Hop · MIT License · © 2026 Sercan Atalik</span>
+    <a href="https://github.com/sercanatalik/hop-remote-launcher">GitHub</a>
+    <a href="https://github.com/sercanatalik/hop-remote-launcher/issues/new">Report an issue</a>
+    <a href="https://github.com/sercanatalik/hop-remote-launcher#readme">README</a>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -8,6 +8,24 @@
 One click to Screen Share, SSH or open files, with Macs on your Tailscale network found automatically,<br>
 plus your Herdr workspaces and agents on those Macs.</p>
 
+<p align="center">
+  <a href="https://sercanatalik.github.io/hop-remote-launcher/"><b>Website</b></a> ·
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#set-up-your-remote-macs"><b>Set up your remote Macs</b></a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/popover-dark.png">
+    <img src="docs/screenshots/popover-light.png" width="380" alt="The Hop panel: a banner for a waiting agent, then three Macs with status marks and Screen Share, SSH and Files buttons; the Studio Mac lists its Herdr workspaces">
+  </picture>
+  &nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mac-detail-dark.png">
+    <img src="docs/screenshots/mac-detail-light.png" width="380" alt="A Mac's detail view: Screen Share, SSH, Files, Copy Address and Wake, then its Herdr workspaces with one line per agent">
+  </picture>
+</p>
+
 ---
 
 ## What it does
@@ -58,29 +76,50 @@ The states are working, blocked, done and idle. Status updates every 30 seconds 
 
 Agent status is on by default. Use the **Agent status** menu at the bottom of the panel, or in the Manage Macs toolbar, to **mute it for 8 hours or 1 week**, or turn it **off**. A mute ends by itself; off stays off until you turn it back on. While muted or off, Hop shows no agent status anywhere, and workspaces and their buttons stay.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/muted-dark.png">
+    <img src="docs/screenshots/muted-light.png" width="380" alt="The Hop panel with agent status muted: workspaces stay listed, and a line shows when the mute ends with a Turn On button">
+  </picture>
+</p>
+
 ## Install
 
-### Download
-
-Get `Hop.zip` from the [latest release](https://github.com/sercanatalik/hop-remote-launcher/releases/latest), unzip it, and move **Hop.app** to Applications.
-
-Hop isn't notarised by Apple yet, so macOS will block it the first time. Try to open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. Or run this:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/Hop.app
-```
+Hop needs macOS 13 or later. It runs on Apple silicon and Intel Macs.
 
 ### Build from source
 
-You need macOS 13 or later and the Xcode Command Line Tools (`xcode-select --install`). Then run:
+1. Install the Xcode Command Line Tools, if you haven't:
 
-```bash
-git clone https://github.com/sercanatalik/hop-remote-launcher.git
-cd hop-remote-launcher
-./build.sh --install
-```
+   ```bash
+   xcode-select --install
+   ```
 
-`UNIVERSAL=1 ./build.sh` builds one app for both Apple silicon and Intel.
+2. Get the code, build Hop and copy it to Applications:
+
+   ```bash
+   git clone https://github.com/sercanatalik/hop-remote-launcher.git
+   cd hop-remote-launcher
+   ./build.sh --install
+   ```
+
+Hop is copied to Applications and starts by itself. Its icon appears in the menu bar.
+
+`./build.sh` alone builds `build/Hop.app` without installing it. `UNIVERSAL=1 ./build.sh` builds one app for both Apple silicon and Intel.
+
+### Download the app
+
+1. Get `Hop.zip` from the [releases page](https://github.com/sercanatalik/hop-remote-launcher/releases) and unzip it.
+2. Move **Hop.app** to Applications.
+3. Hop isn't notarised by Apple yet, so macOS blocks it the first time. Try to open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. Or run this:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Hop.app
+   ```
+
+### Update or remove
+
+To update, pull the latest code and run `./build.sh --install` again, or download the newer `Hop.zip` and replace the app. To remove Hop, quit it, delete **Hop.app** from Applications, and delete `~/Library/Application Support/Hop` if you also want your Mac list gone.
 
 ## Set up your remote Macs
 
