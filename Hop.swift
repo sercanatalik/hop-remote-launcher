@@ -17,15 +17,46 @@ import Combine
 
 // MARK: - Model
 
+/// What kind of computer a host is. It decides the desktop action: Remote Desktop for Windows,
+/// Screen Share for the others.
+enum Platform: String, Codable, CaseIterable, Identifiable {
+    case mac, windows, linux
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .mac:     return "Mac"
+        case .windows: return "Windows"
+        case .linux:   return "Linux"
+        }
+    }
+
+    /// From Tailscale's OS name. Phones, tablets and TVs are not computers Hop can reach, so they give nil.
+    init?(tailscaleOS os: String) {
+        switch os.lowercased() {
+        case "macos":   self = .mac
+        case "windows": self = .windows
+        case "linux":   self = .linux
+        default:        return nil
+        }
+    }
+
+    /// The port its desktop action connects to: Remote Desktop or Screen Sharing.
+    var desktopPort: UInt16 { self == .windows ? Probe.rdp : Probe.vnc }
+    var desktopName: String { self == .windows ? "Remote Desktop" : "Screen Share" }
+    var desktopSymbol: String { self == .windows ? "pc" : "display" }
+}
+
 struct RemoteMac: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var name: String = "New Mac"
     var host: String = ""      // hostname, Bonjour name (studio.local), IP, or Tailscale name
     var user: String = ""      // optional account name on the remote Mac
     var mac: String = ""       // optional MAC address for Wake-on-LAN (aa:bb:cc:dd:ee:ff)
+    var platform: Platform = .mac   // absent in host lists saved before platforms existed
     var isTailnet = false      // discovered from Tailscale (not saved)
 
-    enum CodingKeys: String, CodingKey { case id, name, host, user, mac }
+    enum CodingKeys: String, CodingKey { case id, name, host, user, mac, platform }
 
     init() {}
 
@@ -36,6 +67,7 @@ struct RemoteMac: Codable, Identifiable, Hashable {
         host = (try? c.decode(String.self, forKey: .host)) ?? ""
         user = (try? c.decode(String.self, forKey: .user)) ?? ""
         mac  = (try? c.decode(String.self, forKey: .mac)) ?? ""
+        platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .mac
     }
 }
 
@@ -574,8 +606,8 @@ final class KeyNav: ObservableObject {
 final class Store: ObservableObject {
     @Published var hosts: [RemoteMac] = [] { didSet { save() } }
     @Published var online: [UUID: Bool] = [:]
-    /// Whether each Mac accepts file-sharing (SMB) connections, once checked.
-    @Published var fileSharing: [UUID: Bool] = [:]
+    /// The service ports each host accepted at its last check. No entry means not checked yet.
+    @Published var services: [UUID: Set<UInt16>] = [:]
 
     @Published var tailnet: [RemoteMac] = []
     @Published var tailscaleState: TailscaleState = .unknown
@@ -687,16 +719,11 @@ final class Store: ObservableObject {
         for m in hosts where !m.host.trimmingCharacters(in: .whitespaces).isEmpty {
             let id = m.id, name = m.name, host = m.host.trimmingCharacters(in: .whitespaces)
             Task {
-                async let vnc = Probe.timed(host: host, port: 5900)
-                async let ssh = Probe.timed(host: host, port: 22)
-                async let smb = Probe.timed(host: host, port: 445)
-                let a = await vnc
-                let b = await ssh
-                let c = await smb
-                let up = a != nil || b != nil
+                let open = await Probe.services(host: host)
+                let up = !open.isEmpty      // online when any service answers
                 self.online[id] = up
-                self.fileSharing[id] = c != nil
-                self.latency[id] = [a, b, c].compactMap { $0 }.min()
+                self.services[id] = Set(open.keys)
+                self.latency[id] = open.values.min()
                 self.noteReach(id, name: name, online: up, quiet: quiet)
             }
         }
@@ -778,9 +805,22 @@ final class Store: ObservableObject {
 
     func mute(for seconds: TimeInterval) { agentMode = .muted(until: Date().addingTimeInterval(seconds)) }
 
-    /// False only when the Mac is online and refused a file-sharing connection at the last check.
-    func filesAvailable(_ m: RemoteMac) -> Bool {
-        !(online[m.id] == true && fileSharing[m.id] == false)
+    /// False only when the host is online and refused a connection on that port at the last check.
+    func accepts(_ m: RemoteMac, _ port: UInt16) -> Bool {
+        guard online[m.id] == true, let open = services[m.id] else { return true }
+        return open.contains(port)
+    }
+
+    func filesAvailable(_ m: RemoteMac) -> Bool { accepts(m, Probe.smb) }
+    func sshAvailable(_ m: RemoteMac) -> Bool { accepts(m, Probe.ssh) }
+
+    /// Why the desktop action (Screen Share or Remote Desktop) is dimmed, or nil when it is not.
+    func desktopProblem(_ m: RemoteMac) -> String? {
+        if m.platform == .windows && !Actions.canRemoteDesktop {
+            return "Remote Desktop needs an app on this Mac. Choose it to get Windows App"
+        }
+        guard !accepts(m, m.platform.desktopPort) else { return nil }
+        return m.platform == .windows ? "Remote Desktop appears to be off" : "Screen Sharing appears to be off"
     }
 
     func mac(_ id: UUID?) -> RemoteMac? {
@@ -834,7 +874,8 @@ final class Store: ObservableObject {
             let oldIDs = Dictionary(tailnet.map { ($0.host, $0.id) }, uniquingKeysWith: { a, _ in a })
             var list: [RemoteMac] = []
             for p in peers {
-                if tailscaleMacsOnly && p.os != "macOS" { continue }
+                guard let platform = Platform(tailscaleOS: p.os) else { continue }   // not a computer
+                if tailscaleMacsOnly && platform != .mac { continue }
                 let full = p.host.lowercased()
                 let short = full.split(separator: ".").first.map(String.init) ?? full
                 if saved.contains(full) || saved.contains(short) || p.ips.contains(where: { saved.contains($0) }) { continue }
@@ -842,6 +883,7 @@ final class Store: ObservableObject {
                 m.id = oldIDs[p.host] ?? UUID()
                 m.name = p.name
                 m.host = p.host
+                m.platform = platform
                 m.isTailnet = true
                 list.append(m)
                 online[m.id] = p.online
@@ -851,9 +893,9 @@ final class Store: ObservableObject {
             for m in list where online[m.id] == true {
                 let id = m.id, host = m.host
                 Task {
-                    let ms = await Probe.timed(host: host, port: 445)
-                    self.fileSharing[id] = ms != nil
-                    if let ms { self.latency[id] = ms }
+                    let open = await Probe.services(host: host)
+                    self.services[id] = Set(open.keys)
+                    if let ms = open.values.min() { self.latency[id] = ms }
                 }
             }
         }
@@ -878,6 +920,7 @@ final class Store: ObservableObject {
         c.isTailnet = false
         hosts.append(c)
         online[c.id] = online[m.id]
+        services[c.id] = services[m.id]
         tailnet.removeAll { $0.id == m.id }
         return c.id
     }
@@ -903,6 +946,22 @@ private final class Once: @unchecked Sendable {
 }
 
 enum Probe {
+    static let ssh: UInt16 = 22
+    static let smb: UInt16 = 445
+    static let rdp: UInt16 = 3389
+    static let vnc: UInt16 = 5900
+    static let all: [UInt16] = [vnc, ssh, smb, rdp]
+
+    /// Checks every service port at once; the result maps each port that answered to its time in ms.
+    static func services(host: String) async -> [UInt16: Int] {
+        await withTaskGroup(of: (UInt16, Int?).self) { group in
+            for port in all { group.addTask { (port, await timed(host: host, port: port)) } }
+            var open: [UInt16: Int] = [:]
+            for await (port, ms) in group { if let ms { open[port] = ms } }
+            return open
+        }
+    }
+
     static func tcp(host: String, port: UInt16, timeout: Double = 2.5) async -> Bool {
         await timed(host: host, port: port, timeout: timeout) != nil
     }
@@ -960,6 +1019,41 @@ enum Actions {
     }
 
     static func screenShare(_ m: RemoteMac) { open("vnc", m) }
+
+    // Remote Desktop hand-off. Checked on macOS 27.2 with no client installed: Launch Services returns
+    // no app for rdp://, which is how Hop knows to dim the control. NOT checked: whether Windows App
+    // starts a session from this URL (no Windows App and no Windows PC were available). Microsoft
+    // documents the scheme for its Mac client; if Windows App ignores it, the fallback in the
+    // add-windows-linux-hosts design is to write a .rdp file and open that.
+    private static let windowsAppPage = URL(string: "macappstore://apps.apple.com/app/id1295203466")!
+
+    /// Whether any app on this Mac opens Remote Desktop connections.
+    static var canRemoteDesktop: Bool {
+        guard let probe = URL(string: "rdp://full%20address=s%3Alocalhost") else { return false }
+        return NSWorkspace.shared.urlForApplication(toOpen: probe) != nil
+    }
+
+    static func remoteDesktopURL(_ m: RemoteMac) -> URL? {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._"))
+        let host = m.host.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty, let h = host.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        var s = "rdp://full%20address=s%3A\(h)%3A\(Probe.rdp)"
+        let user = m.user.trimmingCharacters(in: .whitespaces)
+        if !user.isEmpty, let u = user.addingPercentEncoding(withAllowedCharacters: allowed) { s += "&username=s%3A\(u)" }
+        return URL(string: s)
+    }
+
+    /// Opens a Remote Desktop connection in the installed client, or the page to get one.
+    static func remoteDesktop(_ m: RemoteMac) {
+        guard canRemoteDesktop else { NSWorkspace.shared.open(windowsAppPage); return }
+        guard let u = remoteDesktopURL(m) else { NSSound.beep(); return }
+        NSWorkspace.shared.open(u)
+    }
+
+    /// The host's desktop action: Remote Desktop for Windows, Screen Share otherwise.
+    static func desktop(_ m: RemoteMac) {
+        if m.platform == .windows { remoteDesktop(m) } else { screenShare(m) }
+    }
     static func ssh(_ m: RemoteMac)         { open("ssh", m) }
     static func files(_ m: RemoteMac)       { open("smb", m) }
 
@@ -1350,7 +1444,8 @@ struct MacRow: View {
         if store.online[m.id] == false { return "Offline" }
         if m.host.trimmingCharacters(in: .whitespaces).isEmpty { return "No host set" }
         let n = store.spaces(for: m).count
-        return n > 0 ? "\(n) \(n == 1 ? "workspace" : "workspaces")" : nil
+        if n > 0 { return "\(n) \(n == 1 ? "workspace" : "workspaces")" }
+        return m.platform == .mac ? nil : m.platform.label
     }
 
     var body: some View {
@@ -1369,7 +1464,7 @@ struct MacRow: View {
             .buttonStyle(.plain)
             .accessibilityValue(note ?? "")
             .accessibilityHint("Shows all actions for \(m.name)")
-            .accessibilityAction(named: "Screen Share") { Popover.close(); Actions.screenShare(m) }
+            .accessibilityAction(named: Text(m.platform.desktopName)) { Popover.close(); Actions.desktop(m) }
             .accessibilityAction(named: "SSH") { Popover.close(); Actions.ssh(m) }
             .accessibilityAction(named: "Files") { Popover.close(); Actions.files(m) }
             ZStack(alignment: .trailing) {
@@ -1379,10 +1474,19 @@ struct MacRow: View {
                         .accessibilityHidden(true)
                 }
                 HStack(spacing: 0) {
-                    IconButton(symbol: "display", label: "Screen Share \(m.name)") { Popover.close(); Actions.screenShare(m) }
-                        .focused($focus, equals: 1)
-                    IconButton(symbol: "terminal", label: "SSH to \(m.name)") { Popover.close(); Actions.ssh(m) }
-                        .focused($focus, equals: 2)
+                    let desktop = store.desktopProblem(m)
+                    IconButton(symbol: m.platform.desktopSymbol,
+                               label: "\(m.platform.desktopName) \(m.name)" + (desktop.map { ". \($0)" } ?? "")) {
+                        Popover.close(); Actions.desktop(m)
+                    }
+                    .opacity(desktop == nil ? 1 : 0.35)
+                    .focused($focus, equals: 1)
+                    let ssh = store.sshAvailable(m)
+                    IconButton(symbol: "terminal", label: ssh ? "SSH to \(m.name)" : "SSH to \(m.name). SSH appears to be off") {
+                        Popover.close(); Actions.ssh(m)
+                    }
+                    .opacity(ssh ? 1 : 0.35)
+                    .focused($focus, equals: 2)
                     let files = store.filesAvailable(m)
                     IconButton(symbol: "folder",
                                label: files ? "Open shared files on \(m.name)" : "Open shared files on \(m.name). File Sharing appears to be off") {
@@ -1417,13 +1521,21 @@ struct MacDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
-                Button { Popover.close(); Actions.screenShare(m) } label: {
-                    Label("Screen Share", systemImage: "display").fixedSize()
+                let desktop = store.desktopProblem(m)
+                Button { Popover.close(); Actions.desktop(m) } label: {
+                    Label(m.platform.desktopName, systemImage: m.platform.desktopSymbol).fixedSize()
                 }
                 .buttonStyle(.borderedProminent)
+                .opacity(desktop == nil ? 1 : 0.45)
+                .help(desktop ?? "\(m.platform.desktopName) \(m.name)")
+                .accessibilityLabel(m.platform.desktopName + (desktop.map { ". \($0)" } ?? ""))
+                let ssh = store.sshAvailable(m)
                 Button { Popover.close(); Actions.ssh(m) } label: {
                     Label("SSH", systemImage: "terminal").frame(maxWidth: .infinity)
                 }
+                .opacity(ssh ? 1 : 0.45)
+                .help(ssh ? "SSH to \(m.name)" : "SSH appears to be off on \(m.name)")
+                .accessibilityLabel(ssh ? "SSH" : "SSH. SSH appears to be off")
                 let files = store.filesAvailable(m)
                 Button { Popover.close(); Actions.files(m) } label: {
                     Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
@@ -1528,7 +1640,7 @@ struct PopoverView: View {
            let n = ["1", "2", "3"].firstIndex(of: event.charactersIgnoringModifiers ?? "") {
             Popover.close()
             switch n {
-            case 0:  Actions.screenShare(m)
+            case 0:  Actions.desktop(m)
             case 1:  Actions.ssh(m)
             default: Actions.files(m)
             }
@@ -1648,14 +1760,14 @@ struct PopoverView: View {
             HStack(spacing: 8) {
                 if highlighted != nil {
                     keyHint("↩", "Details")
-                    keyHint("⌘1", "Screen Share")
+                    keyHint("⌘1", highlighted?.platform.desktopName ?? "Screen Share")
                     keyHint("⌘2", "SSH")
                     keyHint("⌘3", "Files")
                 }
                 Spacer(minLength: 0)
                 keyHint("esc", "Clear")
             }
-            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85)
             .padding(.horizontal, 12).padding(.vertical, 7)
         }
     }
@@ -1741,6 +1853,7 @@ struct PopoverView: View {
     private func statusLine(_ m: RemoteMac) -> String {
         var parts = [store.online[m.id] == true ? "Online" : store.online[m.id] == false ? "Offline" : "Checking"]
         if m.isTailnet { parts.append("Tailscale") }
+        if m.platform != .mac { parts.append(m.platform.label) }
         if let machine = store.machine(for: m) {
             parts.append(machine.state.isEmpty ? "Herdr" : "Herdr \(machine.state)")
         }
@@ -1930,6 +2043,9 @@ struct ManagerView: View {
                         TextField("Host", text: $store.hosts[i].host, prompt: Text("studio.local, 192.168.1.20, or Tailscale name"))
                         TextField("User", text: $store.hosts[i].user, prompt: Text("optional"))
                         TextField("MAC address", text: $store.hosts[i].mac, prompt: Text("optional, for Wake-on-LAN"))
+                        Picker("Platform", selection: $store.hosts[i].platform) {
+                            ForEach(Platform.allCases) { p in Text(p.label).tag(p) }
+                        }
                     }
                     Section { actions(store.hosts[i]) }
                     herdrSection(store.hosts[i])
@@ -2070,7 +2186,7 @@ struct ManagerView: View {
     @ViewBuilder
     private func actions(_ m: RemoteMac) -> some View {
         HStack {
-            Button("Screen Share") { Actions.screenShare(m) }
+            Button(m.platform.desktopName) { Actions.desktop(m) }
             Button("SSH") { Actions.ssh(m) }
             Button("Files") { Actions.files(m) }
             if !m.mac.isEmpty {

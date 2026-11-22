@@ -45,6 +45,16 @@ Macs live in two groups:
 - **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name.
 - **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. My Macs is shown once you have saved one.
 
+### Windows and Linux computers
+
+Hop also reaches computers that are not Macs. Turn off **Only Macs** in the Manage Macs toolbar's Tailscale menu to list the Windows and Linux computers on your tailnet, or add one yourself and set its **Platform** in Manage Macs.
+
+- A **Windows** PC gets **Remote Desktop** in place of Screen Share. Hop hands the connection to a remote desktop app on your Mac, such as Microsoft's free [Windows App](https://apps.apple.com/app/id1295203466); if none is installed, the button is dimmed and takes you to it.
+- A **Linux** machine keeps Screen Share, for a VNC server.
+- Any button is dimmed when the computer is online but that service appears to be off, the same way Files is.
+
+Phones, tablets and TVs on your tailnet are never listed.
+
 **Manage Macs…** and **Quit Hop** are at the bottom of the panel. The **More** menu at the top has agent status, Open Screen Sharing, GitHub, Report an Issue and About. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
 
 ### Keyboard
@@ -149,6 +159,8 @@ On each remote Mac, open **System Settings → General → Sharing** and turn on
 | Screen Share | **Screen Sharing** |
 | SSH, Open Herdr in Terminal | **Remote Login** |
 | Files | **File Sharing** |
+
+On a Windows PC, turn on **Remote Desktop** (Settings → System → Remote Desktop; Windows Home does not offer it) for Remote Desktop, the **OpenSSH Server** optional feature for SSH, and share a folder for Files. On Linux, run an SSH server, and a VNC or Samba server if you want Screen Share or Files.
 
 **Away from home:** install [Tailscale](https://tailscale.com) on every Mac, and they show up in Hop wherever you are, with no port forwarding.
 
