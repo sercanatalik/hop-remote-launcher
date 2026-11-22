@@ -13,7 +13,7 @@
 ## 3. Manage Macs window
 
 - [ ] 3.1 Add the "From SSH config" section listing unsaved hosts with an add control, hidden when there is no configuration file, refreshed when the window opens and on Refresh; verify each `ssh-config-import` listing scenario
-- [ ] 3.2 Fill in name, address, user, alias and port when a host is added; verify against the "Adding a host fills in its details" scenarios
+- [x] 3.2 Fill in name, address, user, alias and port when a host is added; verify against the "Adding a host fills in its details" scenarios
 - [x] 3.3 Describe the import in the README and on the website, including that a host behind a jump host shows as offline; verify both mention it
 
 ## 4. Integration checks
