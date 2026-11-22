@@ -129,6 +129,14 @@ Agent status is on by default. Use **Agent status** in the panel's **More** menu
 
 Hop needs macOS 13 or later. It runs on Apple silicon and Intel Macs.
 
+### Homebrew
+
+Install via Homebrew:
+
+```bash
+brew install --cask sercanatalik/hop-remote-launcher/hop
+```
+
 ### Download the app
 
 1. Download [`Hop.zip`](https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip), the latest release, and unzip it. Older versions are on the [releases page](https://github.com/sercanatalik/hop-remote-launcher/releases).
