@@ -55,7 +55,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>MIT licence · github.com/sercanatalik/hop-remote-launcher</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Hop checks whether your remote Macs are online and can wake them over the local network.</string>
+  <string>Hop finds computers on your network, checks whether they are online and can wake them.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_rfb._tcp</string>
+    <string>_ssh._tcp</string>
+    <string>_smb._tcp</string>
+    <string>_device-info._tcp</string>
+  </array>
 </dict>
 </plist>
 PLIST
