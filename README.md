@@ -6,7 +6,7 @@
 
 <p align="center">A tiny macOS menu-bar launcher for your remote computers.<br>
 One click, or a few keys, to Screen Share, SSH or open files on any of your Macs,<br>
-with the ones on your Tailscale network found automatically, Windows PCs and Linux machines too,<br>
+with the ones on your network and on your Tailscale network found automatically, Windows PCs and Linux machines too,<br>
 plus your Herdr workspaces and agents.</p>
 
 <p align="center">
@@ -43,12 +43,17 @@ Point at a Mac and three buttons appear for the things you do most:
 
 A button is dimmed when the Mac is online but that service appears to be off there. It still works if you click it, since the check can be a few seconds old.
 
-Click a Mac's name for everything else: its response time, **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address.
+Click a Mac's name for everything else: its response time, **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address. Hop takes the address in any of the usual spellings: `aa:bb:cc:dd:ee:ff`, `AA-BB-CC-DD-EE-FF`, `aabb.ccdd.eeff` or `aabbccddeeff`.
 
-Macs live in two groups:
+Macs live in three groups:
 
 - **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name. The group is shown once you have saved one.
-- **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. Click one and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name.
+- **Nearby** lists the computers on your local network that have Screen Sharing, Remote Login or File Sharing turned on. They appear and leave by themselves, and the group is shown only while there is one. A nearby computer is reached by its local name, such as `studio.local`, which works only on the same network.
+- **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. An offline one says when it was last seen. Devices that other people shared with your tailnet and Mullvad exit nodes are left out.
+
+Click a nearby or Tailscale computer and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. A computer is listed once: under My Macs if you saved it, otherwise under Tailscale while it is online there, otherwise under Nearby. For a computer you also reach from elsewhere, save the Tailscale one.
+
+Both kinds of discovery are under **Discovery** in the Manage Macs toolbar: **Show nearby computers**, **Show Tailscale devices** and **Only Macs**.
 
 **Manage Macs…** and **Quit Hop** are at the bottom of the panel. The **More** menu at the top has agent status, Open Screen Sharing, GitHub, Report an Issue and About. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
 
@@ -76,11 +81,11 @@ With the panel open, just type to filter the list by name or address. While you 
 
 ### Alerts
 
-Hop can tell you when a saved Mac goes offline or comes back, without the panel being open. Turn on **Alerts** in the Manage Macs toolbar; macOS asks once for permission to show notifications. A Mac is reported after it misses two checks, about a minute, and nothing is reported when your own Mac loses its network or has just woken. Macs listed only from Tailscale are not reported until you add them to My Macs.
+Hop can tell you when a saved Mac goes offline or comes back, without the panel being open. Turn on **Alerts** in the Manage Macs toolbar; macOS asks once for permission to show notifications. A Mac is reported after it misses two checks, about a minute, and nothing is reported when your own Mac loses its network or has just woken. Nearby computers and Macs listed only from Tailscale are not reported until you add them to My Macs.
 
 ### Windows and Linux computers
 
-Hop also reaches computers that are not Macs. Turn off **Only Macs** in the Manage Macs toolbar's Tailscale menu to list the Windows and Linux computers on your tailnet, or add one yourself and set its **Platform** in Manage Macs.
+Hop also reaches computers that are not Macs. Turn off **Only Macs** in the Manage Macs toolbar's Discovery menu to list the Windows and Linux computers on your tailnet, or add one yourself and set its **Platform** in Manage Macs. A nearby computer that is not a Mac is listed when it offers SSH or screen sharing, and is treated as a Linux machine until you save it and change its Platform.
 
 - A **Windows** PC gets **Remote Desktop** in place of Screen Share. Hop hands the connection to a remote desktop app on your Mac, such as Microsoft's free [Windows App](https://apps.apple.com/app/id1295203466); if none is installed, the button is dimmed and takes you to it.
 - A **Linux** machine keeps Screen Share, for a VNC server.
@@ -196,18 +201,20 @@ On each remote Mac, open **System Settings → General → Sharing** and turn on
 
 On a Windows PC, turn on **Remote Desktop** (Settings → System → Remote Desktop; Windows Home does not offer it) for Remote Desktop, the **OpenSSH Server** optional feature for SSH, and share a folder for Files. On Linux, run an SSH server, and a VNC or Samba server if you want Screen Share or Files.
 
-**Away from home:** install [Tailscale](https://tailscale.com) on every computer, and they show up in Hop wherever you are, with no port forwarding.
+**Away from home:** install [Tailscale](https://tailscale.com) on every computer, and they show up in Hop wherever you are, with no port forwarding. When MagicDNS is turned off for your tailnet, Hop connects to a device's Tailscale IP address in place of its name.
 
-**Wake-on-LAN** only works on the same local network. It also needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings, and MacBooks usually only wake this way when plugged in.
+**Wake-on-LAN** only works on the same local network. Hop sends the packet on every network your Mac is attached to, Ethernet and Wi-Fi alike, so it also works while Tailscale or another VPN is connected. It also needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings, and MacBooks usually only wake this way when plugged in.
 
-The first time Hop starts, macOS may ask for **Local Network** access. Allow it, or every Mac stays marked offline.
+The first time Hop starts, macOS may ask for **Local Network** access. Allow it, or every Mac stays marked offline and nothing is listed under Nearby.
 
 ## Troubleshooting
 
 | You see | What to do |
 | --- | --- |
 | "Tailscale isn't running" while Tailscale is running | Update Hop. Versions before 1.1.1 showed this whenever Hop was opened from Finder or at login. |
-| Every Mac is marked offline | Allow Hop under **System Settings → Privacy & Security → Local Network**. |
+| Every Mac is marked offline, or Nearby never appears | Allow Hop under **System Settings → Privacy & Security → Local Network**. Nearby also needs **Show nearby computers** on, under Discovery in Manage Macs. |
+| "Tailscale isn't responding" | The Tailscale app did not answer within 5 seconds. Open Tailscale, or quit and reopen it; Hop checks again every 30 seconds. |
+| A Mac is listed under both Nearby and Tailscale | Its name on your network differs from its Tailscale name, or it is offline on the tailnet. Save one of them to My Macs. |
 | A button is dimmed | That service appears to be off on that computer. Turn it on there (see the table above); the button still tries if you click it. |
 | Remote Desktop is dimmed on every Windows PC | No remote desktop app is installed on your Mac. Click the button to get Windows App. |
 | A host from your SSH config shows as offline | It is probably only reachable through a jump host. SSH still works; Screen Share and Files won't. |

@@ -65,7 +65,7 @@
           "name": "How does automatic Tailscale discovery work?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Hop reads status directly from the Tailscale app already installed on your Mac. It automatically discovers every Mac, Windows PC, and Linux box on your tailnet with live online/offline indicators, requiring no Tailscale API keys or tokens."
+            "text": "Hop reads status directly from the Tailscale app already installed on your Mac. It automatically discovers every Mac, Windows PC, and Linux box on your tailnet with live online/offline indicators, requiring no Tailscale API keys or tokens. Computers on your local network that have Screen Sharing, Remote Login or File Sharing turned on are found too, under Nearby."
           }
         },
         {
@@ -246,7 +246,7 @@
   <div class="wrap">
     <img class="icon" src="icon.png" width="112" height="112" alt="Hop app icon">
     <h1>Every remote Mac, one click away</h1>
-    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your Tailscale network automatically, and jump into your Herdr workspaces. It reaches Windows PCs and Linux machines too.</p>
+    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your network and on your Tailscale network automatically, and jump into your Herdr workspaces. It reaches Windows PCs and Linux machines too.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip">Download for Mac</a>
       <a class="btn" href="#install">How to install</a>
@@ -283,10 +283,11 @@
       <div class="card"><h3>Screen Share</h3><p>Opens macOS's built-in Screen Sharing to that Mac.</p></div>
       <div class="card"><h3>SSH</h3><p>Opens a terminal session, with your user name if you set one.</p></div>
       <div class="card"><h3>Files</h3><p>Connects to the Mac in Finder over file sharing. The button is dimmed when File Sharing appears to be off there.</p></div>
-      <div class="card"><h3>Tailscale discovery</h3><p>Every Mac on your tailnet appears by itself, with live status. No API key needed.</p></div>
+      <div class="card"><h3>Tailscale discovery</h3><p>Every Mac on your tailnet appears by itself, with live status, and an offline one says when it was last seen. No API key needed.</p></div>
+      <div class="card"><h3>Nearby</h3><p>Computers on your local network with Screen Sharing, Remote Login or File Sharing turned on appear by themselves. Add one to My Macs in a click.</p></div>
       <div class="card"><h3>Your SSH config</h3><p>Add hosts from <code>~/.ssh/config</code> in a click. SSH then uses the entry, with its port, key and jump host. A host behind a jump host shows as offline.</p></div>
       <div class="card"><h3>Windows and Linux too</h3><p>List the PCs and Linux machines on your tailnet. A Windows PC gets Remote Desktop, handed to Windows App.</p></div>
-      <div class="card"><h3>Wake and Copy Address</h3><p>In a Mac's detail view, send a Wake-on-LAN packet when you've set a MAC address, or copy the address.</p></div>
+      <div class="card"><h3>Wake and Copy Address</h3><p>In a Mac's detail view, send a Wake-on-LAN packet when you've set a MAC address, or copy the address. Wake goes out on every network your Mac is on, so it works with a VPN connected.</p></div>
       <div class="card"><h3>Keyboard</h3><p>Open Hop from any app with a global shortcut, type to filter, and connect with ⌘1, ⌘2 or ⌘3.</p></div>
       <div class="card"><h3>Alerts</h3><p>Optionally get a notification when a saved Mac goes offline or comes back. Off until you turn it on.</p></div>
       <div class="card"><h3>Small and private</h3><p>One Swift file, no dependencies, no account, no telemetry. Your list stays on your Mac.</p></div>
@@ -412,12 +413,13 @@ cd hop-remote-launcher
       </table>
     </div>
     <div class="notes">
-      <p><strong>First launch.</strong> macOS may ask for Local Network access. Allow it, or every Mac stays marked offline.</p>
+      <p><strong>First launch.</strong> macOS may ask for Local Network access. Allow it, or every Mac stays marked offline and nothing is listed under Nearby.</p>
       <p><strong>Away from home.</strong> Install <a href="https://tailscale.com">Tailscale</a> on every Mac and they show up in Hop wherever you are, with no port forwarding.</p>
       <p><strong>Herdr workspaces.</strong> A Mac shows its workspaces when the Herdr desktop app has it as a machine (<strong>Settings → Machines</strong> in Herdr) under the same host name Hop uses.</p>
-      <p><strong>Wake-on-LAN</strong> only works on the same local network, and needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
+      <p><strong>Wake-on-LAN</strong> only works on the same local network. The MAC address can be written as <code>aa:bb:cc:dd:ee:ff</code>, <code>AA-BB-CC-DD-EE-FF</code>, <code>aabb.ccdd.eeff</code> or <code>aabbccddeeff</code>. It needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
       <p><strong>Windows and Linux.</strong> On a Windows PC, turn on Remote Desktop and the OpenSSH Server feature. Remote Desktop needs a remote desktop app on your Mac, such as Microsoft's free <a href="https://apps.apple.com/app/id1295203466">Windows App</a>. On Linux, run an SSH server.</p>
       <p><strong>"Tailscale isn't running" while it is.</strong> Versions before 1.1.1 showed this when Hop was opened from Finder or at login. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Update to the latest version</a>.</p>
+      <p><strong>"Tailscale isn't responding".</strong> The Tailscale app did not answer within 5 seconds. Open Tailscale, or quit and reopen it; Hop checks again every 30 seconds.</p>
     </div>
   </div>
 </section>
@@ -433,7 +435,7 @@ cd hop-remote-launcher
       </details>
       <details>
         <summary>How does automatic Tailscale discovery work?</summary>
-        <p>Hop reads status directly from the Tailscale app already installed on your Mac. It automatically discovers every Mac, Windows PC, and Linux box on your tailnet with live online/offline indicators. No Tailscale API keys, tokens, or network configuration are required.</p>
+        <p>Hop reads status directly from the Tailscale app already installed on your Mac. It automatically discovers every Mac, Windows PC, and Linux box on your tailnet with live online/offline indicators. No Tailscale API keys, tokens, or network configuration are required. Devices other people shared with your tailnet and Mullvad exit nodes are left out. Computers on your local network that have Screen Sharing, Remote Login or File Sharing turned on are found too, under Nearby; turn that off with Show nearby computers, under Discovery in Manage Macs.</p>
       </details>
       <details>
         <summary>Does Hop work remotely over the internet?</summary>

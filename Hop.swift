@@ -1,6 +1,7 @@
 // Hop — a menu-bar launcher for connecting to remote Macs.
 // Screen Sharing (vnc://), SSH in Terminal (ssh://), shared files (smb://),
 // Wake-on-LAN, a live online/offline indicator, automatic discovery of
+// the computers on your local network (Bonjour) and of
 // the Macs on your Tailscale network (tailnet), and Herdr workspaces and
 // agent status on those Macs.
 // Requires macOS 13+. Build with ./build.sh
@@ -14,6 +15,8 @@ import ServiceManagement
 import UserNotifications
 import Carbon.HIToolbox
 import Combine
+import SystemConfiguration
+import dnssd
 import os
 
 // MARK: - Model
@@ -57,7 +60,10 @@ struct RemoteMac: Codable, Identifiable, Hashable {
     var platform: Platform = .mac   // absent in host lists saved before platforms existed
     var sshAlias: String = ""  // its entry in ~/.ssh/config, when it was added from there
     var sshPort: Int = 0       // that entry's SSH port; 0 means the usual 22
-    var isTailnet = false      // discovered from Tailscale (not saved)
+    var origin: Origin = .saved   // where the row came from; a found one is not in My Macs yet (not saved)
+
+    /// My Macs, or one of the two places Hop finds computers by itself.
+    enum Origin { case saved, tailscale, nearby }
 
     enum CodingKeys: String, CodingKey { case id, name, host, user, mac, platform, sshAlias, sshPort }
 
@@ -208,6 +214,8 @@ struct TailscalePeer {
     let os: String
     let online: Bool
     let ips: [String]
+    /// When it was last connected; nil while it is online, and for a device that never was.
+    let lastSeen: Date?
 }
 
 enum Tailscale {
@@ -224,38 +232,74 @@ enum Tailscale {
 
     private struct Status: Decodable {
         let BackendState: String?
+        let CurrentTailnet: Tailnet?
         let Peer: [String: Peer]?
+        struct Tailnet: Decodable {
+            let MagicDNSEnabled: Bool?
+        }
         struct Peer: Decodable {
             let HostName: String?
             let DNSName: String?
             let OS: String?
             let Online: Bool?
             let TailscaleIPs: [String]?
+            let LastSeen: String?
+            let ShareeNode: Bool?
+            let ExitNodeOption: Bool?
+            let Location: Present?
+
+            /// Not one of the user's computers: a device another tailnet shared in, which can only
+            /// connect to this one, or a server of the Mullvad add-on, of which there are hundreds.
+            /// Mullvad's are known by their name, and on older clients as exit nodes with a location.
+            var isLeftOut: Bool {
+                if ShareeNode == true { return true }
+                let dns = (DNSName ?? "").trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+                return dns.hasSuffix(".mullvad.ts.net") || (ExitNodeOption == true && Location != nil)
+            }
+        }
+        /// Decodes from any value that is there, whatever its shape.
+        struct Present: Decodable {
+            init(from decoder: Decoder) throws {}
         }
     }
 
-    /// Runs `tailscale status --json` and returns every peer on the tailnet.
-    static func fetch() async -> (TailscaleState, [TailscalePeer]) {
-        guard let path = cliPath() else { return (.notInstalled, []) }
-        return await Task.detached(priority: .utility) { () -> (TailscaleState, [TailscalePeer]) in
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: path)
-            p.arguments = ["status", "--json"]
-            // The Tailscale app's binary is both the GUI and the command-line tool, and picks its mode
-            // from the environment. An app started from Finder or at login has a bare environment, in
-            // which the binary tries to be the GUI and prints "The Tailscale GUI failed to start" in
-            // place of the status. TAILSCALE_BE_CLI is Tailscale's switch for forcing the tool.
-            var env = ProcessInfo.processInfo.environment
-            env["TAILSCALE_BE_CLI"] = "1"
-            p.environment = env
-            let out = Pipe()
-            p.standardOutput = out
-            p.standardError = FileHandle.nullDevice
-            do { try p.run() } catch { return (.notRunning("Couldn't run Tailscale"), []) }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            return interpret(data)
-        }.value
+    /// How long `tailscale status` may take before it is stopped.
+    static let timeout: Double = 5
+
+    /// What the Tailscale tool finds in its environment: where the system's programs are, whose home
+    /// it is, and nothing of Hop's own, which holds whatever the shell that started Hop had exported.
+    ///
+    /// The Tailscale app's binary is both the GUI and the command-line tool, and picks its mode from
+    /// the environment. An app started from Finder or at login has a bare environment, in which the
+    /// binary tries to be the GUI and prints "The Tailscale GUI failed to start" in place of the
+    /// status. TAILSCALE_BE_CLI is Tailscale's switch for forcing the tool.
+    ///
+    /// Checked 2026-11-23 with the Tailscale app's binary: status --json answers as usual with only
+    /// these three. NOT checked with a Homebrew tailscale (none was installed); it talks to its
+    /// daemon over a fixed socket, so nothing more is expected to be needed.
+    static var environment: [String: String] {
+        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "TAILSCALE_BE_CLI": "1"]
+    }
+
+    /// Runs `tailscale status --json` and returns every peer on the tailnet, or nil when the tool
+    /// did not answer in time and was stopped.
+    static func fetch(tool: String? = nil) async -> (TailscaleState, [TailscalePeer])? {
+        guard let path = tool ?? cliPath() else { return (.notInstalled, []) }
+        guard let r = await Shell.run(path, ["status", "--json"], timeout: timeout, environment: environment) else {
+            return (.notRunning("Couldn't run Tailscale"), [])
+        }
+        return r.timedOut ? nil : interpret(r.out)
+    }
+
+    /// A time as Tailscale writes it: RFC 3339, with or without fractions of a second. Go's zero time
+    /// (year 1), which stands for "never" and for a device that is online, gives nil.
+    static func date(_ text: String?) -> Date? {
+        guard let text = text?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return nil }
+        let plain = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let d = fractional.date(from: text) ?? plain.date(from: text), d.timeIntervalSince1970 > 0 else { return nil }
+        return d
     }
 
     /// Turns the output of `tailscale status --json` into a state and the peers. No output means the
@@ -270,18 +314,300 @@ enum Tailscale {
                 let state = s.BackendState ?? "Stopped"
                 return (.notRunning(state == "NeedsLogin" ? "Sign in to Tailscale" : "Tailscale is \(state.lowercased())"), [])
             }
-            let peers = (s.Peer ?? [:]).values.map { pr -> TailscalePeer in
+            // The names exist either way, but they only resolve while MagicDNS is on for the tailnet.
+            let magicDNS = s.CurrentTailnet?.MagicDNSEnabled ?? true
+            let peers = (s.Peer ?? [:]).values.filter { !$0.isLeftOut }.map { pr -> TailscalePeer in
                 let dns = (pr.DNSName ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "."))
-                let ip = pr.TailscaleIPs?.first ?? ""
+                let ips = pr.TailscaleIPs ?? []
+                let ip = ips.first { !$0.contains(":") } ?? ips.first ?? ""
+                let online = pr.Online ?? false
                 return TailscalePeer(name: pr.HostName ?? dns,
-                                     host: dns.isEmpty ? ip : dns,
+                                     host: (magicDNS && !dns.isEmpty) || ip.isEmpty ? dns : ip,
                                      os: pr.OS ?? "",
-                                     online: pr.Online ?? false,
-                                     ips: pr.TailscaleIPs ?? [])
+                                     online: online,
+                                     ips: ips,
+                                     lastSeen: online ? nil : date(pr.LastSeen))
             }
             .filter { !$0.host.isEmpty }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             return (.running, peers)
+        }
+    }
+}
+
+// MARK: - Nearby
+
+/// A computer found on the local network through Bonjour.
+struct NearbyPeer: Hashable {
+    let name: String    // the Bonjour service name, which is the computer's name
+    let host: String    // its local host name, such as studio.local
+    let isMac: Bool
+    let vnc: Bool
+    let ssh: Bool
+    let smb: Bool
+}
+
+enum Nearby {
+    /// A host name's first label in lower case. An IP address has no short form and is returned whole.
+    static func short(_ host: String) -> String {
+        let h = host.trimmingCharacters(in: .whitespaces).lowercased()
+        let isIPv4 = !h.isEmpty && h.allSatisfy { $0.isNumber || $0 == "." }
+        if isIPv4 || h.contains(":") { return h }
+        return h.split(separator: ".").first.map(String.init) ?? h
+    }
+
+    /// Whether a device-info record is a Mac's: it carries `osxvers`, which only macOS publishes, or
+    /// a model identifier of a Mac family (`Mac14,3`, `MacBookPro18,1`). Samba's `MacSamba` is neither.
+    static func isMac(deviceInfo txt: [String: String]) -> Bool {
+        if txt["osxvers"] != nil { return true }
+        guard let model = txt["model"] else { return false }
+        let families = ["MacBookPro", "MacBookAir", "MacBook", "Macmini", "MacPro", "iMacPro", "iMac", "Mac"]
+        guard let family = families.first(where: { model.hasPrefix($0) }) else { return false }
+        let parts = model.dropFirst(family.count).split(separator: ",", omittingEmptySubsequences: false)
+        return parts.count == 2 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
+    }
+
+    /// The keys and values of a DNS TXT record: strings, each led by its length.
+    static func txt(_ bytes: [UInt8]) -> [String: String] {
+        var out: [String: String] = [:]
+        var i = 0
+        while i < bytes.count {
+            let n = Int(bytes[i])
+            i += 1
+            guard n > 0, i + n <= bytes.count else { break }
+            if let s = String(bytes: bytes[i..<(i + n)], encoding: .utf8) {
+                let kv = s.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                out[String(kv[0]).lowercased()] = kv.count > 1 ? String(kv[1]) : ""
+            }
+            i += n
+        }
+        return out
+    }
+
+    /// A host target as DNS-SD reports it (`Studio.local.`) without the final dot, or nil when it is
+    /// not something to put in a link.
+    static func host(target: String) -> String? {
+        var h = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        while h.hasSuffix(".") { h.removeLast() }
+        guard !h.isEmpty, !h.contains("\\"), !h.contains(" ") else { return nil }
+        return h
+    }
+
+    /// The peers to list under Nearby. A Mac is listed for any of its three services, anything else
+    /// only for screen sharing or remote login. This Mac, a computer already saved, and one that a
+    /// listed, online Tailscale device stands for are left out. Names are compared by their short form.
+    ///
+    /// `tailnetOnline` holds both the host names and the computer names of those devices. Tailscale
+    /// numbers a DNS name that is already taken (sercans-macbook-pro-1), so the host names of one Mac
+    /// can differ while the name it reports, "sercan’s MacBook Pro", is the same in both places.
+    static func listed(_ peers: [NearbyPeer], saved: [String], tailnetOnline: [String], thisHost: String) -> [NearbyPeer] {
+        let me = short(thisHost)
+        let savedShorts = Set(saved.map(short).filter { !$0.isEmpty })
+        let tailShorts = Set(tailnetOnline.map(short).filter { !$0.isEmpty })
+        var seen = Set<String>()
+        return peers.filter { p in
+            let s = short(p.host)
+            guard !s.isEmpty, s != me else { return false }
+            guard p.vnc || p.ssh || (p.isMac && p.smb) else { return false }
+            guard !savedShorts.contains(s), !tailShorts.contains(s), !tailShorts.contains(short(p.name)) else { return false }
+            return seen.insert(s).inserted
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// This Mac's local host name, such as studio.local.
+    static var thisHost: String {
+        if let name = SCDynamicStoreCopyLocalHostName(nil) as String? { return name + ".local" }
+        return ProcessInfo.processInfo.hostName
+    }
+}
+
+/// Browses the local network for computers that offer screen sharing, remote login or file sharing.
+///
+/// NWBrowser finds the services but only names them; Hop needs a host name for its links, so each
+/// computer is resolved once through DNS-SD, and its device-info record is read to tell whether it is
+/// a Mac. Everything here runs on `queue`, the DNS-SD callbacks included.
+final class NearbyBrowser: @unchecked Sendable {
+    static let types = ["_rfb._tcp", "_ssh._tcp", "_smb._tcp"]
+    /// How long a computer waits for its device-info record before it is listed without one.
+    static let grace: TimeInterval = 1.5
+
+    private final class Lookup {
+        weak var owner: NearbyBrowser?
+        let name: String
+        var ref: DNSServiceRef?
+        init(owner: NearbyBrowser, name: String) { self.owner = owner; self.name = name }
+    }
+
+    private let queue = DispatchQueue(label: "io.github.sercanatalik.hop.nearby", qos: .utility)
+    private let publish: @Sendable ([NearbyPeer]) -> Void
+    private var browsers: [String: NWBrowser] = [:]
+    private var found: [String: Set<String>] = [:]      // service type → the names advertising it
+    private var hosts: [String: String] = [:]
+    private var macs: [String: Bool] = [:]
+    private var firstSeen: [String: Date] = [:]
+    private var lookups: [String: [Lookup]] = [:]
+    private var pending = false
+    private var running = false
+    private var last = Set<NearbyPeer>()    // what was published last, so the same list is said once
+
+    /// `publish` is called on a private queue with the whole list each time it changes.
+    init(publish: @escaping @Sendable ([NearbyPeer]) -> Void) { self.publish = publish }
+
+    func start() {
+        queue.async {
+            guard !self.running else { return }
+            self.running = true
+            for type in Self.types { self.browse(type) }
+        }
+    }
+
+    func stop() {
+        queue.async {
+            guard self.running else { return }
+            self.running = false
+            for b in self.browsers.values { b.cancel() }
+            self.browsers = [:]
+            self.found = [:]
+            for name in Array(self.firstSeen.keys) { self.forget(name) }
+            self.last = []
+            self.publish([])
+        }
+    }
+
+    private func browse(_ type: String) {
+        let browser = NWBrowser(for: .bonjour(type: type, domain: "local."), using: NWParameters())
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self, self.running else { return }
+            var names = Set<String>()
+            for r in results { if case let .service(name, _, _, _) = r.endpoint { names.insert(name) } }
+            self.found[type] = names
+            self.reconcile()
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            guard let self, self.running else { return }
+            switch state {
+            case .failed:
+                // The system's Bonjour service went away. Drop what this type knew and look again.
+                self.found[type] = []
+                self.reconcile()
+                self.browsers[type]?.cancel()
+                self.browsers[type] = nil
+                self.queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+                    guard let self, self.running, self.browsers[type] == nil else { return }
+                    self.browse(type)
+                }
+            case .waiting:
+                // Local Network access is refused, or there is no network: nothing is nearby.
+                self.found[type] = []
+                self.reconcile()
+            default: break
+            }
+        }
+        browsers[type] = browser
+        browser.start(queue: queue)
+    }
+
+    /// Brings the lookups in line with the names now advertised: forgets those that left, resolves new ones.
+    private func reconcile() {
+        let names = found.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+        for name in Array(firstSeen.keys) where !names.contains(name) { forget(name) }
+        for name in names where firstSeen[name] == nil {
+            firstSeen[name] = Date()
+            let type = Self.types.first { found[$0]?.contains(name) == true } ?? Self.types[0]
+            resolve(name, type: type)
+            deviceInfo(name)
+            queue.asyncAfter(deadline: .now() + Self.grace) { [weak self] in self?.changed() }
+        }
+        changed()
+    }
+
+    private func forget(_ name: String) {
+        for l in lookups[name] ?? [] { if let ref = l.ref { DNSServiceRefDeallocate(ref) } }
+        lookups[name] = nil
+        hosts[name] = nil
+        macs[name] = nil
+        firstSeen[name] = nil
+    }
+
+    private func finish(_ lookup: Lookup) {
+        if let ref = lookup.ref { DNSServiceRefDeallocate(ref); lookup.ref = nil }
+        lookups[lookup.name]?.removeAll { $0 === lookup }
+    }
+
+    private func resolve(_ name: String, type: String) {
+        let lookup = Lookup(owner: self, name: name)
+        let reply: DNSServiceResolveReply = { _, _, _, error, _, target, _, _, _, context in
+            guard let context else { return }
+            let lookup = Unmanaged<Lookup>.fromOpaque(context).takeUnretainedValue()
+            guard let owner = lookup.owner else { return }
+            if error == kDNSServiceErr_NoError, let target, let host = Nearby.host(target: String(cString: target)) {
+                owner.hosts[lookup.name] = host
+                owner.changed()
+            }
+            owner.finish(lookup)
+        }
+        var ref: DNSServiceRef?
+        guard DNSServiceResolve(&ref, 0, 0, name, type, "local.", reply, Unmanaged.passUnretained(lookup).toOpaque()) == kDNSServiceErr_NoError,
+              let ref else { return }
+        lookup.ref = ref
+        lookups[name, default: []].append(lookup)
+        if DNSServiceSetDispatchQueue(ref, queue) != kDNSServiceErr_NoError { finish(lookup) }
+    }
+
+    /// Asks for the computer's device-info record. Macs publish one under their name without
+    /// advertising it as a service, so it can only be asked for, not browsed.
+    private func deviceInfo(_ name: String) {
+        var full = [CChar](repeating: 0, count: Int(kDNSServiceMaxDomainName))
+        guard DNSServiceConstructFullName(&full, name, "_device-info._tcp", "local.") == kDNSServiceErr_NoError else { return }
+        let lookup = Lookup(owner: self, name: name)
+        let reply: DNSServiceQueryRecordReply = { _, flags, _, error, _, _, _, length, data, _, context in
+            guard let context else { return }
+            let lookup = Unmanaged<Lookup>.fromOpaque(context).takeUnretainedValue()
+            guard let owner = lookup.owner else { return }
+            guard error == kDNSServiceErr_NoError, flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0, let data else {
+                if error != kDNSServiceErr_NoError { owner.finish(lookup) }
+                return
+            }
+            let bytes = [UInt8](UnsafeRawBufferPointer(start: data, count: Int(length)))
+            owner.macs[lookup.name] = Nearby.isMac(deviceInfo: Nearby.txt(bytes))
+            owner.changed()
+            owner.finish(lookup)
+        }
+        var ref: DNSServiceRef?
+        guard DNSServiceQueryRecord(&ref, 0, 0, full, UInt16(kDNSServiceType_TXT), UInt16(kDNSServiceClass_IN), reply,
+                                    Unmanaged.passUnretained(lookup).toOpaque()) == kDNSServiceErr_NoError,
+              let ref else { return }
+        lookup.ref = ref
+        lookups[name, default: []].append(lookup)
+        if DNSServiceSetDispatchQueue(ref, queue) != kDNSServiceErr_NoError { finish(lookup) }
+    }
+
+    /// Publishes once for everything that changes within a third of a second.
+    private func changed() {
+        guard running, !pending else { return }
+        pending = true
+        queue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            self.pending = false
+            guard self.running else { return }
+            let now = Set(self.peers())
+            guard now != self.last else { return }
+            self.last = now
+            self.publish(Array(now))
+        }
+    }
+
+    private func peers() -> [NearbyPeer] {
+        let now = Date()
+        return firstSeen.compactMap { name, seen in
+            guard let host = hosts[name] else { return nil }
+            // Its device-info record says whether it is a Mac; wait a moment for it before going without.
+            guard macs[name] != nil || now.timeIntervalSince(seen) >= Self.grace else { return nil }
+            return NearbyPeer(name: name, host: host, isMac: macs[name] ?? false,
+                              vnc: found["_rfb._tcp"]?.contains(name) == true,
+                              ssh: found["_ssh._tcp"]?.contains(name) == true,
+                              smb: found["_smb._tcp"]?.contains(name) == true)
         }
     }
 }
@@ -297,11 +623,13 @@ struct ShellResult {
 
 enum Shell {
     /// Runs a tool off the main actor and returns its stdout. The child is terminated after `timeout` seconds.
-    static func run(_ path: String, _ args: [String], timeout: Double) async -> ShellResult? {
+    /// With an `environment`, the tool finds only that; without one it inherits Hop's.
+    static func run(_ path: String, _ args: [String], timeout: Double, environment: [String: String]? = nil) async -> ShellResult? {
         await Task.detached(priority: .utility) { () -> ShellResult? in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
             p.arguments = args
+            if let environment { p.environment = environment }
             let out = Pipe()
             p.standardOutput = out
             p.standardError = FileHandle.nullDevice
@@ -856,7 +1184,7 @@ final class KeyNav: ObservableObject {
 
 @MainActor
 final class Store: ObservableObject {
-    @Published var hosts: [RemoteMac] = [] { didSet { save() } }
+    @Published var hosts: [RemoteMac] = [] { didSet { save(); rebuildNearby() } }
     @Published var online: [UUID: Bool] = [:]
     /// Hosts named in ~/.ssh/config that are not saved yet; nil when there is no such file.
     @Published var sshConfigHosts: [SSHHost]?
@@ -870,6 +1198,29 @@ final class Store: ObservableObject {
     }
     @Published var tailscaleMacsOnly: Bool = UserDefaults.standard.object(forKey: "tailscaleMacsOnly") as? Bool ?? true {
         didSet { UserDefaults.standard.set(tailscaleMacsOnly, forKey: "tailscaleMacsOnly"); refreshTailscale() }
+    }
+    /// When each offline Tailscale device was last connected, where Tailscale says.
+    @Published var lastSeen: [UUID: Date] = [:]
+
+    // Nearby
+    /// The computers found on the local network that are not saved and not already listed from Tailscale.
+    @Published var nearby: [RemoteMac] = []
+    @Published var showNearby: Bool = UserDefaults.standard.object(forKey: "showNearby") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showNearby, forKey: "showNearby")
+            if showNearby { nearbyBrowser.start() } else { nearbyBrowser.stop(); nearbyPeers = [] }
+            rebuildNearby()
+        }
+    }
+    /// Everything the browser has found, before the list rules are applied.
+    private var nearbyPeers: [NearbyPeer] = []
+    private lazy var nearbyBrowser = NearbyBrowser { [weak self] peers in
+        Task { @MainActor in
+            guard let self, self.showNearby else { return }
+            self.nearbyPeers = peers
+            self.rebuildNearby()
+            self.probeNearby()
+        }
     }
 
     // Herdr
@@ -957,6 +1308,7 @@ final class Store: ObservableObject {
             let saved = hotkey
             DispatchQueue.main.async { [weak self] in self?.setHotkey(saved, prompt: false) }
         }
+        if showNearby { nearbyBrowser.start() }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -964,8 +1316,8 @@ final class Store: ObservableObject {
     }
 
     var configURL: URL { fileURL }
-    var onlineCount: Int { (hosts + tailnet).filter { online[$0.id] == true }.count }
-    var totalCount: Int { hosts.count + tailnet.count }
+    var onlineCount: Int { (hosts + nearby + tailnet).filter { online[$0.id] == true }.count }
+    var totalCount: Int { hosts.count + nearby.count + tailnet.count }
 
     func load() {
         loading = true
@@ -997,6 +1349,7 @@ final class Store: ObservableObject {
             }
         }
         refreshTailscale()
+        probeNearby()
         refreshHerdr()
     }
 
@@ -1218,7 +1571,7 @@ final class Store: ObservableObject {
 
     func mac(_ id: UUID?) -> RemoteMac? {
         guard let id else { return nil }
-        return (hosts + tailnet).first { $0.id == id }
+        return (hosts + nearby + tailnet).first { $0.id == id }
     }
 
     func machine(for m: RemoteMac) -> HerdrMachine? {
@@ -1258,10 +1611,17 @@ final class Store: ObservableObject {
         guard showTailscale else {
             tailnet = []
             tailscaleState = .unknown
+            rebuildNearby()
             return
         }
         Task {
-            let (state, peers) = await Tailscale.fetch()
+            guard let (state, peers) = await Tailscale.fetch() else {
+                // The tool did not answer in time. What is listed stays; only a first check that
+                // never finished has something to say.
+                if tailscaleState == .unknown { tailscaleState = .notRunning("Tailscale isn't responding") }
+                return
+            }
+            guard showTailscale else { return }
             // Skip peers you've already saved under "My Macs".
             let saved = Set(hosts.map { $0.host.lowercased().trimmingCharacters(in: .whitespaces) })
             let oldIDs = Dictionary(tailnet.map { ($0.host, $0.id) }, uniquingKeysWith: { a, _ in a })
@@ -1277,12 +1637,14 @@ final class Store: ObservableObject {
                 m.name = p.name
                 m.host = p.host
                 m.platform = platform
-                m.isTailnet = true
+                m.origin = .tailscale
                 list.append(m)
                 online[m.id] = p.online
+                lastSeen[m.id] = p.lastSeen
             }
             tailscaleState = state
             tailnet = list
+            rebuildNearby()     // a computer that is online on the tailnet is listed there, not under Nearby
             for m in list where online[m.id] == true {
                 let id = m.id, host = m.host
                 Task {
@@ -1290,6 +1652,43 @@ final class Store: ObservableObject {
                     self.services[id] = Set(open.keys)
                     if let ms = open.values.min() { self.latency[id] = ms }
                 }
+            }
+        }
+    }
+
+    /// Applies the list rules to what the browser found. Rows keep their ids for as long as the
+    /// computer keeps its host name, so an open detail view stays on it.
+    func rebuildNearby() {
+        guard showNearby, !nearbyPeers.isEmpty else {
+            if !nearby.isEmpty { nearby = [] }
+            return
+        }
+        let tailnetOnline = tailnet.filter { online[$0.id] == true }.flatMap { [$0.name, $0.host] }
+        let peers = Nearby.listed(nearbyPeers, saved: hosts.map(\.host), tailnetOnline: tailnetOnline, thisHost: Nearby.thisHost)
+        let oldIDs = Dictionary(nearby.map { ($0.host.lowercased(), $0.id) }, uniquingKeysWith: { a, _ in a })
+        var list: [RemoteMac] = []
+        for p in peers {
+            var m = RemoteMac()
+            m.id = oldIDs[p.host.lowercased()] ?? UUID()
+            m.name = p.name
+            m.host = p.host
+            m.platform = p.isMac ? .mac : .linux
+            m.origin = .nearby
+            list.append(m)
+            online[m.id] = true     // it is advertising, so it is there
+        }
+        if list != nearby { nearby = list }
+    }
+
+    /// Checks which services each nearby computer accepts, for dimming its buttons and its response time.
+    func probeNearby() {
+        for m in nearby {
+            let id = m.id, host = m.host
+            Task {
+                let open = await Probe.services(host: host)
+                guard self.nearby.contains(where: { $0.id == id }) else { return }
+                self.services[id] = Set(open.keys)
+                self.latency[id] = open.values.min()
             }
         }
     }
@@ -1305,16 +1704,18 @@ final class Store: ObservableObject {
         return m.id
     }
 
-    /// Copies a Tailscale device into "My Macs" so you can rename it, set a user, etc.
+    /// Copies a Tailscale device or a nearby computer into "My Macs" so you can rename it, set a user, etc.
     @discardableResult
     func pin(_ m: RemoteMac) -> UUID {
         var c = m
         c.id = UUID()
-        c.isTailnet = false
-        hosts.append(c)
+        c.origin = .saved
         online[c.id] = online[m.id]
         services[c.id] = services[m.id]
+        latency[c.id] = latency[m.id]
+        hosts.append(c)
         tailnet.removeAll { $0.id == m.id }
+        nearby.removeAll { $0.id == m.id }
         return c.id
     }
 
@@ -1599,14 +2000,86 @@ enum Actions {
         NSWorkspace.shared.open(url)
     }
 
-    /// Sends a Wake-on-LAN magic packet to the local broadcast address (UDP port 9).
-    @discardableResult
-    static func wake(_ m: RemoteMac) -> Bool {
-        let bytes = m.mac.split(whereSeparator: { $0 == ":" || $0 == "-" }).compactMap { UInt8($0, radix: 16) }
-        guard bytes.count == 6 else { NSSound.beep(); return false }
-        var packet = [UInt8](repeating: 0xFF, count: 6)
-        for _ in 0..<16 { packet += bytes }
+    /// Wakes a Mac: its magic packet goes out on every local network, three times a quarter of a
+    /// second apart, off the main thread. Only a first round that reached no network counts as a
+    /// failure; once the packet has gone out, a repeat that fails is no reason to say so.
+    static func wake(_ m: RemoteMac) {
+        guard let address = MACAddress.parse(m.mac) else { NSSound.beep(); return }
+        let packet = WakeOnLAN.packet(for: address)
+        Task.detached(priority: .userInitiated) {
+            guard WakeOnLAN.broadcast(packet) else {
+                await MainActor.run { NSSound.beep() }
+                return
+            }
+            for _ in 1..<WakeOnLAN.repetitions {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                _ = WakeOnLAN.broadcast(packet)
+            }
+        }
+    }
+}
 
+// MARK: - Wake-on-LAN
+
+enum MACAddress {
+    /// The six bytes of a hardware address, in any spelling people copy from other tools:
+    /// aa:bb:cc:dd:ee:ff or AA-BB-CC-DD-EE-FF, where a group may leave out its leading zero as `arp`
+    /// prints them (0:1c:b3:9:85:15); aabb.ccdd.eeff; or aabbccddeeff. Separators cannot be mixed.
+    static func parse(_ text: String) -> [UInt8]? {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        func hex(_ g: Substring) -> Bool { !g.isEmpty && g.allSatisfy { $0.isASCII && $0.isHexDigit } }
+        for separator in [":", "-"] as [Character] where s.contains(separator) {
+            let groups = s.split(separator: separator, omittingEmptySubsequences: false)
+            guard groups.count == 6, groups.allSatisfy({ hex($0) && $0.count <= 2 }) else { return nil }
+            return groups.compactMap { UInt8($0, radix: 16) }
+        }
+        var digits = s
+        if s.contains(".") {
+            let groups = s.split(separator: ".", omittingEmptySubsequences: false)
+            guard groups.count == 3, groups.allSatisfy({ hex($0) && $0.count == 4 }) else { return nil }
+            digits = groups.joined()
+        }
+        guard digits.count == 12, hex(Substring(digits)) else { return nil }
+        let chars = Array(digits)
+        return stride(from: 0, to: 12, by: 2).compactMap { UInt8(String(chars[$0...$0 + 1]), radix: 16) }
+    }
+}
+
+enum WakeOnLAN {
+    static let repetitions = 3
+
+    /// The magic packet for an adapter: six 0xFF bytes, then its address sixteen times.
+    static func packet(for address: [UInt8]) -> [UInt8] {
+        var packet = [UInt8](repeating: 0xFF, count: 6)
+        for _ in 0..<16 { packet += address }
+        return packet
+    }
+
+    /// The interfaces worth broadcasting on: up and running, with an IPv4 address, able to broadcast,
+    /// and neither loopback nor point-to-point, which rules out VPN tunnels.
+    static func interfaces() -> [UInt32] {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return [] }
+        defer { freeifaddrs(list) }
+        var found: [UInt32] = []
+        for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(p.pointee.ifa_flags)
+            guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == sa_family_t(AF_INET),
+                  flags & IFF_UP != 0, flags & IFF_RUNNING != 0, flags & IFF_BROADCAST != 0,
+                  flags & (IFF_LOOPBACK | IFF_POINTOPOINT) == 0 else { continue }
+            let index = if_nametoindex(p.pointee.ifa_name)
+            if index != 0, !found.contains(index) { found.append(index) }
+        }
+        return found
+    }
+
+    /// Sends one copy of the packet to the broadcast address (UDP port 9) on every local network.
+    ///
+    /// 255.255.255.255 only leaves through the interface of the default route. With a VPN up, and
+    /// Tailscale is one, that can be a tunnel that carries no broadcasts, and on a Mac with both
+    /// Ethernet and Wi-Fi it reaches one of the two networks. Binding the socket to each interface
+    /// in turn puts the packet on all of them. Returns false when no network took it.
+    static func broadcast(_ packet: [UInt8]) -> Bool {
         let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard fd >= 0 else { return false }
         defer { close(fd) }
@@ -1619,14 +2092,26 @@ enum Actions {
         addr.sin_port = in_port_t(9).bigEndian
         addr.sin_addr.s_addr = 0xFFFF_FFFF   // 255.255.255.255
 
-        let sent = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                packet.withUnsafeBytes { buf in
-                    sendto(fd, buf.baseAddress, buf.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+        func send() -> Bool {
+            let sent = withUnsafePointer(to: &addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    packet.withUnsafeBytes { buf in
+                        sendto(fd, buf.baseAddress, buf.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
                 }
             }
+            return sent == packet.count
         }
-        return sent == packet.count
+
+        var delivered = false
+        for var index in interfaces() {
+            guard setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &index, socklen_t(MemoryLayout<UInt32>.size)) == 0 else { continue }
+            if send() { delivered = true }
+        }
+        var unbound: UInt32 = 0
+        setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &unbound, socklen_t(MemoryLayout<UInt32>.size))
+        // No interface took it: let the routing table choose, as Hop always used to.
+        return delivered || send()
     }
 }
 
@@ -2034,15 +2519,16 @@ struct MacDetailView: View {
                 .opacity(files ? 1 : 0.45)
                 .help(files ? "Open shared files on \(m.name)" : "File Sharing appears to be off on \(m.name)")
                 .accessibilityLabel(files ? "Files" : "Files. File Sharing appears to be off")
-                if !m.mac.isEmpty || offersTerminal || m.isTailnet {
+                let canWake = MACAddress.parse(m.mac) != nil
+                if canWake || offersTerminal || m.origin != .saved {
                     Menu {
-                        if !m.mac.isEmpty {
+                        if canWake {
                             Button("Wake") { Actions.wake(m) }
                         }
                         if offersTerminal {
                             Button("Open Herdr in Terminal") { Popover.close(); Actions.herdrTerminal(m) }
                         }
-                        if m.isTailnet {
+                        if m.origin != .saved {
                             Button("Add to My Macs") { pinned(store.pin(m)) }
                         }
                     } label: {
@@ -2114,7 +2600,8 @@ struct PopoverView: View {
 
     /// The Macs listed while text is typed, in the order they are drawn.
     private var matched: [RemoteMac] {
-        store.hosts.filter(matches) + (store.showTailscale ? store.tailnet.filter(matches) : [])
+        store.hosts.filter(matches) + store.nearby.filter(matches)
+            + (store.showTailscale ? store.tailnet.filter(matches) : [])
     }
 
     private var highlighted: RemoteMac? {
@@ -2343,12 +2830,18 @@ struct PopoverView: View {
 
     private func statusLine(_ m: RemoteMac) -> String {
         var parts = [store.online[m.id] == true ? "Online" : store.online[m.id] == false ? "Offline" : "Checking"]
-        if m.isTailnet { parts.append("Tailscale") }
+        if m.origin == .tailscale { parts.append("Tailscale") }
+        if m.origin == .nearby { parts.append("Nearby") }
         if m.platform != .mac { parts.append(m.platform.label) }
         if let machine = store.machine(for: m) {
             parts.append(machine.state.isEmpty ? "Herdr" : "Herdr \(machine.state)")
         }
         if store.online[m.id] == true, let ms = store.latency[m.id] { parts.append("\(ms) ms") }
+        if m.origin == .tailscale, store.online[m.id] == false, let seen = store.lastSeen[m.id] {
+            let relative = RelativeDateTimeFormatter()
+            relative.unitsStyle = .full
+            parts.append("Last seen \(relative.localizedString(for: seen, relativeTo: Date()))")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -2358,16 +2851,21 @@ struct PopoverView: View {
     @ViewBuilder
     private var filteredList: some View {
         let mine = store.hosts.filter(matches)
+        let near = store.nearby.filter(matches)
         let tail = store.showTailscale ? store.tailnet.filter(matches) : []
         let chosen = highlighted?.id
         VStack(alignment: .leading, spacing: 2) {
-            if mine.isEmpty && tail.isEmpty {
+            if mine.isEmpty && near.isEmpty && tail.isEmpty {
                 Text("No Macs match “\(nav.query)”").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, 14)
             }
             if !mine.isEmpty {
                 SectionLabel("My Macs")
                 ForEach(mine) { m in MacRow(m: m, highlighted: m.id == chosen) { detail = m.id } }
+            }
+            if !near.isEmpty {
+                SectionLabel("Nearby")
+                ForEach(near) { m in MacRow(m: m, highlighted: m.id == chosen) { detail = m.id } }
             }
             if !tail.isEmpty {
                 SectionLabel("Tailscale")
@@ -2383,6 +2881,10 @@ struct PopoverView: View {
             if !store.hosts.isEmpty {
                 SectionLabel("My Macs")
                 ForEach(store.hosts) { m in macBlock(m) }
+            }
+            if !store.nearby.isEmpty {
+                SectionLabel("Nearby")
+                ForEach(store.nearby) { m in macBlock(m) }
             }
             if store.showTailscale {
                 SectionLabel("Tailscale")
@@ -2400,7 +2902,7 @@ struct PopoverView: View {
                 case .unknown:
                     Text("Checking Tailscale…").foregroundStyle(.secondary).padding(.leading, 8).padding(.vertical, 4)
                 }
-            } else if store.hosts.isEmpty {
+            } else if store.hosts.isEmpty && store.nearby.isEmpty {
                 HStack {
                     Text("No Macs yet").foregroundStyle(.secondary)
                     Spacer()
@@ -2491,6 +2993,11 @@ struct ManagerView: View {
                 Section("My Macs") {
                     ForEach(store.hosts) { m in row(m) }
                 }
+                if !store.nearby.isEmpty {
+                    Section("Nearby") {
+                        ForEach(store.nearby) { m in row(m) }
+                    }
+                }
                 if store.showTailscale {
                     Section("Tailscale") {
                         switch store.tailscaleState {
@@ -2558,6 +3065,11 @@ struct ManagerView: View {
                         TextField("Host", text: $store.hosts[i].host, prompt: Text("studio.local, 192.168.1.20, or Tailscale name"))
                         TextField("User", text: $store.hosts[i].user, prompt: Text("optional"))
                         TextField("MAC address", text: $store.hosts[i].mac, prompt: Text("optional, for Wake-on-LAN"))
+                        if !store.hosts[i].mac.trimmingCharacters(in: .whitespaces).isEmpty,
+                           MACAddress.parse(store.hosts[i].mac) == nil {
+                            Text("Not a MAC address. Use the form aa:bb:cc:dd:ee:ff.")
+                                .font(.caption).foregroundStyle(.red)
+                        }
                         Picker("Platform", selection: $store.hosts[i].platform) {
                             ForEach(Platform.allCases) { p in Text(p.label).tag(p) }
                         }
@@ -2566,14 +3078,14 @@ struct ManagerView: View {
                     herdrSection(store.hosts[i])
                 }
                 .formStyle(.grouped)
-            } else if let id = selection, let m = store.tailnet.first(where: { $0.id == id }) {
+            } else if let id = selection, let m = (store.nearby + store.tailnet).first(where: { $0.id == id }) {
                 Form {
                     Section {
                         LabeledContent("Name", value: m.name)
-                        LabeledContent("Tailscale address", value: m.host)
+                        LabeledContent(m.origin == .nearby ? "Address" : "Tailscale address", value: m.host)
                         LabeledContent("Status", value: store.online[m.id] == true ? "Online" : "Offline")
                     } header: {
-                        Text("From Tailscale")
+                        Text(m.origin == .nearby ? "Nearby" : "From Tailscale")
                     } footer: {
                         Text("Add it to My Macs to rename it or set a user name.")
                     }
@@ -2597,12 +3109,14 @@ struct ManagerView: View {
         .toolbar {
             ToolbarItem {
                 Menu {
+                    Toggle("Show nearby computers", isOn: $store.showNearby)
+                    Divider()
                     Toggle("Show Tailscale devices", isOn: $store.showTailscale)
                     Toggle("Only Macs", isOn: $store.tailscaleMacsOnly)
                     Divider()
                     Button("Open Tailscale") { Actions.openTailscale() }
                 } label: {
-                    Label("Tailscale", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label("Discovery", systemImage: "point.3.connected.trianglepath.dotted")
                 }
             }
             ToolbarItem {
@@ -2711,7 +3225,7 @@ struct ManagerView: View {
             Button(m.platform.desktopName) { Actions.desktop(m) }
             Button("SSH") { Actions.ssh(m) }
             Button("Files") { Actions.files(m) }
-            if !m.mac.isEmpty {
+            if MACAddress.parse(m.mac) != nil {
                 Button("Wake") { Actions.wake(m) }
             }
         }
