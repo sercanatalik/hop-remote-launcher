@@ -43,7 +43,9 @@ Point at a Mac and three buttons appear for the things you do most:
 
 A button is dimmed when the Mac is online but that service appears to be off there. It still works if you click it, since the check can be a few seconds old.
 
-Click a Mac's name for everything else: its response time, **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet when you've set a MAC address. Hop takes the address in any of the usual spellings: `aa:bb:cc:dd:ee:ff`, `AA-BB-CC-DD-EE-FF`, `aabb.ccdd.eeff` or `aabbccddeeff`.
+Click a Mac's name for everything else: its response time, **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet. Wake is offered once Hop knows the computer's MAC address. It finds that by itself the first time the computer is awake on the same network as your Mac, for saved and Tailscale computers alike, and shows it in Manage Macs as "Found automatically". You can also type one: `aa:bb:cc:dd:ee:ff`, `AA-BB-CC-DD-EE-FF`, `aabb.ccdd.eeff` or `aabbccddeeff`. Found addresses are kept on your Mac only.
+
+You rarely need Wake itself. Choose Screen Share, SSH or Files for a computer that is offline and Hop wakes it first, shows **Waking…**, and opens the connection as soon as the computer answers. **Cancel** stops the wait; after 30 seconds Hop gives up and says **Did not wake**.
 
 Macs live in three groups:
 
@@ -51,7 +53,11 @@ Macs live in three groups:
 - **Nearby** lists the computers on your local network that have Screen Sharing, Remote Login or File Sharing turned on. They appear and leave by themselves, and the group is shown only while there is one. A nearby computer is reached by its local name, such as `studio.local`, which works only on the same network.
 - **Tailscale** lists every Mac on your tailnet automatically, with live online status. Hop reads it from the Tailscale app already on your Mac, so no API key is needed. An offline one says when it was last seen. Devices that other people shared with your tailnet and Mullvad exit nodes are left out.
 
-Click a nearby or Tailscale computer and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. A computer is listed once: under My Macs if you saved it, otherwise under Tailscale while it is online there, otherwise under Nearby. For a computer you also reach from elsewhere, save the Tailscale one.
+Click a nearby or Tailscale computer and choose **Add to My Macs** from its **…** menu to save it, where you can rename it or set a user name. A computer is listed once: under My Macs if you saved it, otherwise under Tailscale if it is on your tailnet, otherwise under Nearby. For a computer you also reach from elsewhere, save the Tailscale one.
+
+A saved or Tailscale computer whose own address is not answering, but which is on the same network as your Mac, is still shown as online. Its status reads **Online · Local network** and its buttons connect over the local network until its own address works again. This needs **Show nearby computers** to be on.
+
+Saved Tailscale computers keep up with your tailnet. If a device is registered again and Tailscale gives it a new name, such as `studio-1` in place of `studio`, the saved computer follows it and keeps its name, user and MAC address. If a device has left your tailnet, Hop removes the saved computer after three checks in a row, about a minute and a half. Computers saved by a local name or an IP address are never changed.
 
 Both kinds of discovery are under **Discovery** in the Manage Macs toolbar: **Show nearby computers**, **Show Tailscale devices** and **Only Macs**.
 
@@ -209,7 +215,7 @@ On a Windows PC, turn on **Remote Desktop** (Settings → System → Remote Desk
 
 **Away from home:** install [Tailscale](https://tailscale.com) on every computer, and they show up in Hop wherever you are, with no port forwarding. When MagicDNS is turned off for your tailnet, Hop connects to a device's Tailscale IP address in place of its name.
 
-**Wake-on-LAN** only works on the same local network. Hop sends the packet on every network your Mac is attached to, Ethernet and Wi-Fi alike, so it also works while Tailscale or another VPN is connected. It also needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings, and MacBooks usually only wake this way when plugged in.
+**Wake-on-LAN** only works on the same local network, and so does waking before a connection: away from that network the wait ends in "Did not wake". Hop sends the packet on every network your Mac is attached to, Ethernet and Wi-Fi alike, and to every MAC address it knows for the computer, so it also works while Tailscale or another VPN is connected. It also needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings, and MacBooks usually only wake this way when plugged in.
 
 The first time Hop starts, macOS may ask for **Local Network** access. Allow it, or every Mac stays marked offline and nothing is listed under Nearby.
 
@@ -220,7 +226,9 @@ The first time Hop starts, macOS may ask for **Local Network** access. Allow it,
 | "Tailscale isn't running" while Tailscale is running | Update Hop. Versions before 1.1.1 showed this whenever Hop was opened from Finder or at login. |
 | Every Mac is marked offline, or Nearby never appears | Allow Hop under **System Settings → Privacy & Security → Local Network**. Nearby also needs **Show nearby computers** on, under Discovery in Manage Macs. |
 | "Tailscale isn't responding" | The Tailscale app did not answer within 5 seconds. Open Tailscale, or quit and reopen it; Hop checks again every 30 seconds. |
-| A Mac is listed under both Nearby and Tailscale | Its name on your network differs from its Tailscale name, or it is offline on the tailnet. Save one of them to My Macs. |
+| A Mac is listed under both Nearby and Tailscale | Its name on your network differs from its Tailscale name. Save one of them to My Macs. |
+| A Mac is awake but shown as offline | It has not rejoined Tailscale yet, which on a Mac can wait until someone logs in. On the same network Hop shows it as **Online · Local network** and connects that way; turn on **Show nearby computers** if it does not. |
+| "Did not wake" | The computer did not answer within 30 seconds. It may be on another network, shut down rather than asleep, or have "Wake for network access" turned off. |
 | A button is dimmed | That service appears to be off on that computer. Turn it on there (see the table above); the button still tries if you click it. |
 | Remote Desktop is dimmed on every Windows PC | No remote desktop app is installed on your Mac. Click the button to get Windows App. |
 | A host from your SSH config shows as offline | It is probably only reachable through a jump host. SSH still works; Screen Share and Files won't. |
