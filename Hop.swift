@@ -3323,12 +3323,16 @@ struct MacRow: View {
             if store.waking[m.id] != nil {
                 // Waiting for it to wake: the wait is said and can be stopped, without hovering.
                 HStack(spacing: 6) {
+                    // Said in full when it fits: the name gives way first, then a long helper name.
                     Text(store.wakingText(m.id)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .frame(maxWidth: 165, alignment: .trailing)
+                        .fixedSize()
                     Button("Cancel") { store.cancelWake(m.id) }
                         .controlSize(.small)
                         .fixedSize()
                         .accessibilityLabel("Cancel waking \(m.name)")
                 }
+                .layoutPriority(1)
             } else {
                 ZStack(alignment: .trailing) {
                     if let note {
