@@ -706,8 +706,10 @@ struct ShellResult {
 
 enum Shell {
     /// Runs a tool off the main actor and returns its stdout. The child is terminated after `timeout` seconds.
-    /// With an `environment`, the tool finds only that; without one it inherits Hop's.
-    static func run(_ path: String, _ args: [String], timeout: Double, environment: [String: String]? = nil) async -> ShellResult? {
+    /// With an `environment`, the tool finds only that; without one it inherits Hop's. `input` is
+    /// what the tool reads on its standard input; without it there is nothing to read.
+    static func run(_ path: String, _ args: [String], timeout: Double, environment: [String: String]? = nil,
+                    input: Data? = nil) async -> ShellResult? {
         await Task.detached(priority: .utility) { () -> ShellResult? in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
@@ -716,8 +718,14 @@ enum Shell {
             let out = Pipe()
             p.standardOutput = out
             p.standardError = FileHandle.nullDevice
-            p.standardInput = FileHandle.nullDevice
+            let stdin = input == nil ? nil : Pipe()
+            p.standardInput = stdin ?? FileHandle.nullDevice
             do { try p.run() } catch { return nil }
+            if let stdin, let input {
+                // Small scripts only: well under the pipe's buffer, so this cannot block.
+                try? stdin.fileHandleForWriting.write(contentsOf: input)
+                try? stdin.fileHandleForWriting.close()
+            }
             let once = Once()
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 if p.isRunning, once.claim() { p.terminate() }
@@ -1323,8 +1331,20 @@ final class Store: ObservableObject {
     static let goneLimit = 3
 
     // Waking before a connection
-    /// The connection each waking computer is waited on for.
-    @Published private(set) var waking: [UUID: ConnectAction] = [:]
+    /// A wait for a computer to wake: the connection it is for, and the computer that sent the
+    /// wake-up packet on its network when one did. The token tells one wait from the next.
+    struct Waking {
+        let action: ConnectAction
+        let token: UUID
+        var helper: String?
+    }
+    @Published private(set) var waking: [UUID: Waking] = [:]
+    /// Whether a computer on a sleeping computer's network may be asked to send the wake-up packet.
+    @Published var wakeThroughOthers: Bool = UserDefaults.standard.object(forKey: "wakeThroughOthers") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(wakeThroughOthers, forKey: "wakeThroughOthers") }
+    }
+    /// How long a computer woken through another one gets: it has to rejoin Tailscale as well.
+    static let relayedWakeLimit: TimeInterval = 45
     /// Computers that did not answer after a wake, until their next check.
     @Published private(set) var wakeFailed: Set<UUID> = []
     private var wakeTasks: [UUID: Task<Void, Never>] = [:]
@@ -1948,7 +1968,61 @@ final class Store: ObservableObject {
 
     func canWake(_ m: RemoteMac) -> Bool { !wakeAddresses(for: m).isEmpty }
 
-    func wake(_ m: RemoteMac) { Actions.wake(wakeAddresses(for: m)) }
+    func wake(_ m: RemoteMac) {
+        let addresses = wakeAddresses(for: m)
+        Actions.wake(addresses)
+        relayWake(for: m, addresses: addresses) { _ in }
+    }
+
+    /// What is shown while a computer is waited on.
+    func wakingText(_ id: UUID) -> String {
+        guard let helper = waking[id]?.helper else { return "Waking…" }
+        return "Waking through \(helper)…"
+    }
+
+    // MARK: Waking through another computer
+
+    private func candidates(assumeReady: Bool) -> [HelperCandidate] {
+        (hosts + tailnet).map { m in
+            HelperCandidate(id: m.id, key: Learned.key(m.host), saved: m.origin == .saved,
+                            online: assumeReady || online[m.id] == true,
+                            routed: !assumeReady && localRoute[m.id] != nil,
+                            ssh: assumeReady || services[m.id]?.contains(Probe.ssh) == true)
+        }
+    }
+
+    /// The computers that can send a wake-up packet for this one right now, at most two.
+    func helpers(for m: RemoteMac) -> [RemoteMac] {
+        guard wakeThroughOthers else { return [] }
+        let ids = Relay.helpers(target: Learned.key(m.host), candidates: candidates(assumeReady: false), book: learned)
+        return ids.compactMap { mac($0) }
+    }
+
+    /// Every computer Hop has seen on this one's network, whether or not it could help this minute:
+    /// what Manage Macs lists as "Can be woken through".
+    func neighbours(of m: RemoteMac) -> [RemoteMac] {
+        guard wakeThroughOthers else { return [] }
+        let ids = Relay.helpers(target: Learned.key(m.host), candidates: candidates(assumeReady: true), book: learned, limit: .max)
+        return ids.compactMap { mac($0) }
+    }
+
+    /// Asks the helpers to send the wake-up packet when this Mac is not on the computer's network.
+    /// Each is asked on its own; `sent` is called with the name of every one that did it. Nothing
+    /// is said about one that could not: the wait then simply runs as it would without a helper.
+    private func relayWake(for m: RemoteMac, addresses: [[UInt8]], sent: @escaping @MainActor (String) -> Void) {
+        guard wakeThroughOthers, !addresses.isEmpty,
+              let network = Learned.network(of: Learned.key(m.host), in: learned) else { return }
+        let here = LocalNet.network(router: LocalNet.router(), networks: LocalNet.networks(), neighbours: LocalNet.neighbours())
+        guard Relay.needed(target: network.id, here: here?.id) else { return }
+        let configured = SSHConfig.hosts() ?? []
+        for helper in helpers(for: m) {
+            guard let destination = Relay.destination(helper, configured: configured) else { continue }
+            let name = helper.name
+            Task {
+                if await Relay.send(through: destination, addresses: addresses, broadcast: network.broadcast) { sent(name) }
+            }
+        }
+    }
 
     /// Learns the hardware addresses of the listed computers that are on a local network right now.
     ///
@@ -1987,10 +2061,21 @@ final class Store: ObservableObject {
             guard !found.isEmpty else { return }
             let now = Date()
             var book = Learned.pruned(learned, at: now)
-            for f in found { Learned.record(&book, key: f.key, mac: f.mac, ip: f.ip, at: now) }
+            let here = LocalNet.network(router: LocalNet.router(), networks: networks, neighbours: LocalNet.neighbours())
+            for f in found {
+                // The network is noted for a sighting on the router's own subnet only.
+                var net: String?, broadcast: String?
+                if let here, let ip = LocalNet.ipv4(f.ip), ip & here.mask == here.address & here.mask {
+                    net = here.id
+                    broadcast = LocalNet.broadcast(address: here.address, mask: here.mask)
+                }
+                Learned.record(&book, key: f.key, mac: f.mac, ip: f.ip, at: now, net: net, broadcast: broadcast)
+            }
             // The times move at every check; the list on screen and the file follow only when an
             // address or its place changed, and otherwise about once an hour.
-            func shape(_ b: Learned.Book) -> [String: [String]] { b.mapValues { $0.map { $0.mac + " " + $0.ip } } }
+            func shape(_ b: Learned.Book) -> [String: [String]] {
+                b.mapValues { $0.map { "\($0.mac) \($0.ip) \($0.net ?? "")" } }
+            }
             guard shape(book) != shape(learned) || now.timeIntervalSince(learnedSaved) > 3600 else { return }
             learned = book
             learnedSaved = now
@@ -2011,16 +2096,21 @@ final class Store: ObservableObject {
             Actions.open(action, routed(m))
             return
         }
-        let id = m.id
+        let id = m.id, token = UUID()
         if wakeFailed.contains(id) { wakeFailed.remove(id) }
-        waking[id] = action
+        waking[id] = Waking(action: action, token: token, helper: nil)
         wakeTasks[id] = Task {
             var target = await answering(action, m)
             if target == nil, !Task.isCancelled {
                 Actions.wake(addresses)
-                let deadline = Date().addingTimeInterval(Self.wakeLimit)
+                relayWake(for: m, addresses: addresses) { name in
+                    // The first helper to send it is the one named, and only for this wait.
+                    if self.waking[id]?.token == token, self.waking[id]?.helper == nil { self.waking[id]?.helper = name }
+                }
+                let started = Date()
                 while target == nil {
-                    let left = deadline.timeIntervalSinceNow
+                    let limit = waking[id]?.helper == nil ? Self.wakeLimit : Self.relayedWakeLimit
+                    let left = limit - Date().timeIntervalSince(started)
                     guard left > 0 else { break }
                     try? await Task.sleep(nanoseconds: UInt64(min(2, left) * 1_000_000_000))
                     if Task.isCancelled { return }
@@ -2154,6 +2244,28 @@ enum LocalNet {
         return found
     }
 
+    /// The broadcast address of a network, in dotted form.
+    static func broadcast(address: UInt32, mask: UInt32) -> String { dotted(address | ~mask) }
+
+    static func dotted(_ n: UInt32) -> String { "\(n >> 24).\(n >> 16 & 0xff).\(n >> 8 & 0xff).\(n & 0xff)" }
+
+    /// The IP address of the router of this Mac's primary network, as the system has it.
+    static func router() -> String? {
+        guard let info = SCDynamicStoreCopyValue(nil, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+              let router = info["Router"] as? String, ipv4(router) != nil else { return nil }
+        return router
+    }
+
+    /// The network a router stands for: its hardware address, which tells two networks apart even
+    /// when both use 192.168.1.x, and the address and mask of the network it is on. Nil when the
+    /// router is not known, is on none of the networks, or has no entry in the neighbour table.
+    static func network(router: String?, networks: [(address: UInt32, mask: UInt32)], neighbours: [String: String])
+        -> (id: String, address: UInt32, mask: UInt32)? {
+        guard let router, let ip = ipv4(router), let id = neighbours[router],
+              let net = networks.first(where: { ip & $0.mask == $0.address & $0.mask }) else { return nil }
+        return (id, net.address, net.mask)
+    }
+
     /// Whether an address is on one of those networks and is a computer's: not this Mac's own
     /// address there, and neither the network's address nor its broadcast address.
     static func onLink(_ ip: String, networks: [(address: UInt32, mask: UInt32)]) -> Bool {
@@ -2273,6 +2385,11 @@ struct LearnedAddress: Codable, Hashable {
     var mac: String
     var ip: String
     var seen: Date
+    /// The network it was seen on, known by its router's hardware address. Absent for a sighting
+    /// made before networks were recorded, or on a network that is not this Mac's primary one.
+    var net: String? = nil
+    /// That network's broadcast address.
+    var broadcast: String? = nil
 }
 
 /// The hardware addresses Hop has learned, by computer. A computer is known by its address as it is
@@ -2288,11 +2405,19 @@ enum Learned {
     static func key(_ host: String) -> String { host.trimmingCharacters(in: .whitespaces).lowercased() }
 
     /// Notes a sighting: the address moves to the front, and the oldest beyond `keep` are dropped.
-    static func record(_ book: inout Book, key: String, mac: String, ip: String, at date: Date) {
+    static func record(_ book: inout Book, key: String, mac: String, ip: String, at date: Date,
+                       net: String? = nil, broadcast: String? = nil) {
         guard !key.isEmpty else { return }
         var list = (book[key] ?? []).filter { $0.mac != mac }
-        list.insert(LearnedAddress(mac: mac, ip: ip, seen: date), at: 0)
+        list.insert(LearnedAddress(mac: mac, ip: ip, seen: date, net: net, broadcast: broadcast), at: 0)
         book[key] = Array(list.prefix(keep))
+    }
+
+    /// The network a computer is on, as far as Hop knows: that of its most recent sighting. A
+    /// laptop last seen somewhere else is on that network, not on the one it was seen on before.
+    static func network(of key: String, in book: Book) -> (id: String, broadcast: String?)? {
+        guard let latest = book[key]?.first, let net = latest.net else { return nil }
+        return (net, latest.broadcast)
     }
 
     /// The book without the computers last seen more than `expiry` ago.
@@ -2327,6 +2452,141 @@ enum Learned {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
         if let data = try? enc.encode(book) { try? data.write(to: url, options: .atomic) }
+    }
+}
+
+// MARK: - Waking through another computer
+
+/// What Hop knows about a listed computer when it looks for one that can send a wake-up packet.
+struct HelperCandidate {
+    let id: UUID
+    let key: String         // its address as listed, the key of what was learned about it
+    let saved: Bool
+    let online: Bool
+    let routed: Bool        // reached only through the local network, so not from elsewhere
+    let ssh: Bool           // its SSH port answered at the last check
+}
+
+/// Sending the wake-up packet from a computer that is on the sleeping computer's network.
+enum Relay {
+    /// How many helpers are asked at once.
+    static let limit = 2
+    /// How long one helper gets.
+    static let timeout: Double = 10
+
+    /// The computers that can wake `target`: the ones last seen on the same network, online at
+    /// their own address with SSH answering. Saved computers come first. The target never helps
+    /// itself, under any name it is listed by: one that shares a hardware address with it is it.
+    static func helpers(target: String, candidates: [HelperCandidate], book: Learned.Book, limit: Int = Relay.limit) -> [UUID] {
+        guard let network = Learned.network(of: target, in: book) else { return [] }
+        let own = Set((book[target] ?? []).map(\.mac))
+        let fit = candidates.filter { c in
+            guard c.key != target, c.online, !c.routed, c.ssh,
+                  Learned.network(of: c.key, in: book)?.id == network.id else { return false }
+            return own.isDisjoint(with: (book[c.key] ?? []).map(\.mac))
+        }
+        return Array((fit.filter(\.saved) + fit.filter { !$0.saved }).map(\.id).prefix(limit))
+    }
+
+    /// Whether a wake should also go through a helper: the computer's network is known and this Mac
+    /// is not on it. A Mac whose own network cannot be told is taken to be somewhere else.
+    static func needed(target network: String?, here: String?) -> Bool {
+        guard let network else { return false }
+        return here != network
+    }
+
+    /// The options that keep `ssh` from ever asking anything: it fails where it would prompt for a
+    /// password or passphrase, and refuses a host whose key is not known yet without saving it.
+    static let options = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                          "-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=5"]
+
+    /// Where `ssh` signs in for a row, as arguments: its SSH config entry when it has one that is
+    /// still there, so the file's user, port and key apply; otherwise its address with the saved
+    /// user and port. Nil for a row with no address.
+    static func destination(_ m: RemoteMac, configured: [SSHHost]) -> [String]? {
+        if !m.sshAlias.isEmpty, configured.contains(where: { $0.alias == m.sshAlias }) { return [m.sshAlias] }
+        let host = m.host.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty, !host.hasPrefix("-") else { return nil }
+        let user = m.user.trimmingCharacters(in: .whitespaces)
+        var args: [String] = []
+        if (1...65535).contains(m.sshPort), m.sshPort != 22 { args += ["-p", String(m.sshPort)] }
+        args.append(user.isEmpty || user.hasPrefix("-") ? host : "\(user)@\(host)")
+        return args
+    }
+
+    /// The words the helper's shell is given: `sh -s`, which reads `script` from standard input,
+    /// then each hardware address as twelve hex digits and the network's broadcast address. Both
+    /// are written out by Hop from numbers, so there is nothing in them for a shell to interpret.
+    static func command(addresses: [[UInt8]], broadcast: String?) -> [String] {
+        var words = ["sh", "-s", "--"]
+        words += addresses.filter { $0.count == 6 }.map { $0.map { String(format: "%02x", $0) }.joined() }
+        if let n = broadcast.flatMap(LocalNet.ipv4) { words.append(LocalNet.dotted(n)) }
+        return words
+    }
+
+    /// What the helper runs. It only sends the wake-up packet: for each hardware address, three
+    /// times a quarter of a second apart, to the broadcast addresses, with whatever the helper
+    /// already has. Perl is tried first: every Mac has it, while a Mac's /usr/bin/python3 may be the
+    /// placeholder that offers to install developer tools, which must not be started.
+    static let script = #"""
+    macs=""; bc="255.255.255.255"
+    for a in "$@"; do
+      case "$a" in
+        *.*) bc="$bc $a" ;;
+        *) macs="$macs $a" ;;
+      esac
+    done
+    [ -n "$macs" ] || exit 2
+    if command -v perl >/dev/null 2>&1; then
+      perl -MIO::Socket::INET -e '
+        my @b = split / /, shift; my $ok = 0;
+        for my $r (1..3) {
+          for my $mac (@ARGV) {
+            my $p = ("\xff" x 6) . (pack("H12", $mac) x 16);
+            for my $b (@b) {
+              my $s = IO::Socket::INET->new(Proto => "udp", PeerAddr => $b, PeerPort => 9, Broadcast => 1) or next;
+              $ok = 1 if $s->send($p); close $s;
+            }
+          }
+          select(undef, undef, undef, 0.25);
+        }
+        exit($ok ? 0 : 1);' "$bc" $macs 2>/dev/null && { echo sent; exit 0; }
+    fi
+    py=$(command -v python3 2>/dev/null)
+    if [ -n "$py" ] && ! { [ "$(uname)" = Darwin ] && [ "$py" = /usr/bin/python3 ]; }; then
+      "$py" -c '
+    import socket, sys, time
+    bs = sys.argv[1].split(); ok = False
+    for r in range(3):
+        for mac in sys.argv[2:]:
+            p = b"\xff" * 6 + bytes.fromhex(mac) * 16
+            for b in bs:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    s.sendto(p, (b, 9)); s.close(); ok = True
+                except OSError:
+                    pass
+        time.sleep(0.25)
+    sys.exit(0 if ok else 1)' "$bc" $macs 2>/dev/null && { echo sent; exit 0; }
+    fi
+    for tool in wakeonlan etherwake ether-wake; do
+      command -v "$tool" >/dev/null 2>&1 || continue
+      ok=1
+      for m in $macs; do
+        "$tool" "$(echo "$m" | sed 's/../&:/g; s/:$//')" >/dev/null 2>&1 || ok=0
+      done
+      [ "$ok" = 1 ] && { echo sent; exit 0; }
+    done
+    exit 1
+
+    """#
+
+    /// Asks one computer to send the packet. True when it says it did.
+    static func send(through destination: [String], addresses: [[UInt8]], broadcast: String?) async -> Bool {
+        let args = options + destination + command(addresses: addresses, broadcast: broadcast)
+        guard let r = await Shell.run("/usr/bin/ssh", args, timeout: timeout, input: Data(script.utf8)) else { return false }
+        return r.ok
     }
 }
 
@@ -3063,9 +3323,10 @@ struct MacRow: View {
             if store.waking[m.id] != nil {
                 // Waiting for it to wake: the wait is said and can be stopped, without hovering.
                 HStack(spacing: 6) {
-                    Text("Waking…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(store.wakingText(m.id)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Button("Cancel") { store.cancelWake(m.id) }
                         .controlSize(.small)
+                        .fixedSize()
                         .accessibilityLabel("Cancel waking \(m.name)")
                 }
             } else {
@@ -3171,7 +3432,7 @@ struct MacDetailView: View {
             if store.waking[m.id] != nil {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Waking \(m.name)…").font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    Text(store.wakingText(m.id)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 4)
                     Button("Cancel") { store.cancelWake(m.id) }
                 }
@@ -3465,7 +3726,7 @@ struct PopoverView: View {
     }
 
     private func statusLine(_ m: RemoteMac) -> String {
-        if store.waking[m.id] != nil { return "Waking…" }
+        if store.waking[m.id] != nil { return store.wakingText(m.id) }
         if store.wakeFailed.contains(m.id) { return "Did not wake" }
         var parts = [store.online[m.id] == true ? "Online" : store.online[m.id] == false ? "Offline" : "Checking"]
         // Reached through the local network: that says more than where the row came from.
@@ -3714,6 +3975,9 @@ struct ManagerView: View {
                         if let found = foundAddresses(store.hosts[i]) {
                             Text(found).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
+                        if let through = wokenThrough(store.hosts[i]) {
+                            Text(through).font(.caption).foregroundStyle(.secondary)
+                        }
                         Picker("Platform", selection: $store.hosts[i].platform) {
                             ForEach(Platform.allCases) { p in Text(p.label).tag(p) }
                         }
@@ -3730,6 +3994,9 @@ struct ManagerView: View {
                         LabeledContent("Status", value: store.online[m.id] == true ? "Online" : "Offline")
                         if let found = foundAddresses(m) {
                             Text(found).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        if let through = wokenThrough(m) {
+                            Text(through).font(.caption).foregroundStyle(.secondary)
                         }
                     } header: {
                         Text(m.origin == .nearby ? "Nearby" : "From Tailscale")
@@ -3760,6 +4027,8 @@ struct ManagerView: View {
                     Divider()
                     Toggle("Show Tailscale devices", isOn: $store.showTailscale)
                     Toggle("Only Macs", isOn: $store.tailscaleMacsOnly)
+                    Divider()
+                    Toggle("Wake through other computers", isOn: $store.wakeThroughOthers)
                     Divider()
                     Button("Open Tailscale") { Actions.openTailscale() }
                 } label: {
@@ -3872,6 +4141,12 @@ struct ManagerView: View {
         return list.isEmpty ? nil : "Found automatically: " + list.joined(separator: ", ")
     }
 
+    /// "Can be woken through: …" with the computers seen on this one's network, or nil.
+    private func wokenThrough(_ m: RemoteMac) -> String? {
+        let names = store.neighbours(of: m).map(\.name)
+        return names.isEmpty ? nil : "Can be woken through: " + names.joined(separator: ", ")
+    }
+
     @ViewBuilder
     private func actions(_ m: RemoteMac) -> some View {
         HStack {
@@ -3882,7 +4157,7 @@ struct ManagerView: View {
                 Button("Wake") { store.wake(m) }
             }
             if store.waking[m.id] != nil {
-                Text("Waking…").foregroundStyle(.secondary)
+                Text(store.wakingText(m.id)).foregroundStyle(.secondary).lineLimit(1)
                 Button("Cancel") { store.cancelWake(m.id) }
             } else if store.wakeFailed.contains(m.id) {
                 Text("Did not wake").foregroundStyle(.secondary)
