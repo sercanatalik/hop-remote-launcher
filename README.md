@@ -7,6 +7,7 @@
 <p align="center">A tiny macOS menu-bar launcher for your remote computers.<br>
 One click, or a few keys, to Screen Share, SSH or open files on any of your Macs,<br>
 with the ones on your network and on your Tailscale network found automatically, Windows PCs and Linux machines too,<br>
+a sleeping Mac woken first, wherever you are,<br>
 plus your Herdr workspaces and agents.</p>
 
 <p align="center">
@@ -45,7 +46,14 @@ A button is dimmed when the Mac is online but that service appears to be off the
 
 Click a Mac's name for everything else: its response time, **Copy Address**, and **Wake**, which sends a Wake-on-LAN packet. Wake is offered once Hop knows the computer's MAC address. It finds that by itself the first time the computer is awake on the same network as your Mac, for saved and Tailscale computers alike, and shows it in Manage Macs as "Found automatically". You can also type one: `aa:bb:cc:dd:ee:ff`, `AA-BB-CC-DD-EE-FF`, `aabb.ccdd.eeff` or `aabbccddeeff`. Found addresses are kept on your Mac only.
 
-You rarely need Wake itself. Choose Screen Share, SSH or Files for a computer that is offline and Hop wakes it first, shows **Waking…**, and opens the connection as soon as the computer answers. **Cancel** stops the wait; after 30 seconds Hop gives up and says **Did not wake**.
+You rarely need Wake itself. Choose Screen Share, SSH or Files for a computer that is offline and Hop wakes it first, shows **Waking…**, and opens the connection as soon as the computer answers. **Cancel** stops the wait; after 30 seconds Hop gives up and says **Did not wake**. This works away from home too: Hop asks another computer on that network to send the packet, and the row reads **Waking through** and its name. See [Waking from elsewhere](#waking-from-elsewhere).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/waking-dark.png">
+    <img src="docs/screenshots/waking-light.png" width="380" alt="The Hop panel with three Macs. MacBook Air is offline and its row reads Waking through Studio, with a Cancel button">
+  </picture>
+</p>
 
 Macs live in three groups:
 
@@ -63,7 +71,7 @@ Both kinds of discovery are under **Discovery** in the Manage Macs toolbar: **Sh
 
 **Manage Macs…** and **Quit Hop** are at the bottom of the panel. The **More** menu at the top has agent status, Open Screen Sharing, GitHub, Report an Issue and About. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
 
-Hop is a single Swift file with no dependencies, no account and no telemetry. Your list stays in `~/Library/Application Support/Hop/hosts.json`.
+Hop is a single Swift file with no dependencies, no account and no telemetry, and it talks only to your own computers. Your list stays in `~/Library/Application Support/Hop/hosts.json`, and the MAC addresses Hop finds in `learned.json` beside it.
 
 ### Keyboard
 
@@ -228,6 +236,7 @@ Hop can wake a computer at home while your Mac is on another network, by asking 
 
 Hop cannot tell whether the packet reached the sleeping computer, only that the helper sent it.
 
+### First launch
 
 The first time Hop starts, macOS may ask for **Local Network** access. Allow it, or every Mac stays marked offline and nothing is listed under Nearby.
 

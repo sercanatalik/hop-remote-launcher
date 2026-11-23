@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hop — macOS Menu Bar Remote Desktop, Tailscale & SSH Launcher</title>
-<meta name="description" content="Hop is a lightweight, open-source macOS menu bar app for 1-click Screen Sharing, SSH, and file access across remote Macs, PCs, and Tailscale network.">
-<meta name="keywords" content="macOS menu bar, mac screen sharing, tailscale mac, ssh launcher mac, remote desktop mac, wake on lan, herdr, open source mac utility">
+<meta name="description" content="Hop is a lightweight, open-source macOS menu bar app for 1-click Screen Sharing, SSH and file access across remote Macs, PCs and your Tailscale network. It wakes sleeping computers first, even when you are away.">
+<meta name="keywords" content="macOS menu bar, mac screen sharing, tailscale mac, ssh launcher mac, remote desktop mac, wake on lan, wake on lan over tailscale, wake mac remotely, herdr, open source mac utility">
 <!-- Google Search Console verification: uncomment and replace with your token -->
 <!-- <meta name="google-site-verification" content="YOUR_GSC_VERIFICATION_TOKEN"> -->
 <meta property="og:title" content="Hop — macOS Menu Bar Remote Desktop, Tailscale & SSH Launcher">
@@ -38,7 +38,7 @@
         "price": "0",
         "priceCurrency": "USD"
       },
-      "description": "A tiny macOS menu-bar launcher for Screen Sharing, SSH, shared files, Wake-on-LAN, and automatic Tailscale discovery.",
+      "description": "A tiny macOS menu-bar launcher for Screen Sharing, SSH and shared files, with automatic Tailscale and local network discovery. It wakes a sleeping computer before connecting, from home or away.",
       "downloadUrl": "https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip",
       "screenshot": "https://sercanatalik.github.io/hop-remote-launcher/screenshots/popover-light.png",
       "author": {
@@ -78,6 +78,22 @@
         },
         {
           "@type": "Question",
+          "name": "Can Hop wake a sleeping Mac?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Choose Screen Share, SSH or Files for a computer that is asleep and Hop sends a Wake-on-LAN packet first, then opens the connection when the computer answers. Hop finds each computer's MAC address by itself the first time it is awake on your network, so there is nothing to type."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can Hop wake a computer at home when I am away?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes, if another computer on that network is awake. A wake-up packet only travels on the local network, so Hop signs in over SSH to a computer it has seen on the same network and has it send the packet. The helper must accept SSH from your Mac without a prompt. Hop installs nothing on it and never stores a password."
+          }
+        },
+        {
+          "@type": "Question",
           "name": "How do I bypass the macOS Gatekeeper warning on first launch?",
           "acceptedAnswer": {
             "@type": "Answer",
@@ -97,7 +113,7 @@
           "name": "Does Hop collect telemetry, analytics, or require an account?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "No. Hop has zero telemetry, no tracking, no external network communication, and requires no account. Your saved hosts list stays strictly on your Mac in ~/Library/Application Support/Hop/hosts.json."
+            "text": "No. Hop has no telemetry, no tracking and no account, and it talks only to your own computers. Your saved list and the MAC addresses Hop finds stay on your Mac in ~/Library/Application Support/Hop."
           }
         }
       ]
@@ -234,6 +250,7 @@
   <nav>
     <a class="brand" href="#top"><img src="icon.png" alt="">Hop</a>
     <a class="hide-s" href="#features">Features</a>
+    <a class="hide-s" href="#wake">Wake</a>
     <a class="hide-s" href="#herdr">Herdr</a>
     <a class="hide-s" href="#keyboard">Keyboard</a>
     <a href="#install">Install</a>
@@ -246,7 +263,7 @@
   <div class="wrap">
     <img class="icon" src="icon.png" width="112" height="112" alt="Hop app icon">
     <h1>Every remote Mac, one click away</h1>
-    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your network and on your Tailscale network automatically, and jump into your Herdr workspaces. It reaches Windows PCs and Linux machines too.</p>
+    <p class="lede">Hop is a tiny macOS menu-bar app. Screen Share, SSH or open files on any of your Macs, find the ones on your network and on your Tailscale network automatically, and jump into your Herdr workspaces. A sleeping Mac is woken first, wherever you are. It reaches Windows PCs and Linux machines too.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest/download/Hop.zip">Download for Mac</a>
       <a class="btn" href="#install">How to install</a>
@@ -287,10 +304,33 @@
       <div class="card"><h3>Nearby</h3><p>Computers on your local network with Screen Sharing, Remote Login or File Sharing turned on appear by themselves. Add one to My Macs in a click.</p></div>
       <div class="card"><h3>Your SSH config</h3><p>Add hosts from <code>~/.ssh/config</code> in a click. SSH then uses the entry, with its port, key and jump host. A host behind a jump host shows as offline.</p></div>
       <div class="card"><h3>Windows and Linux too</h3><p>List the PCs and Linux machines on your tailnet. A Windows PC gets Remote Desktop, handed to Windows App.</p></div>
-      <div class="card"><h3>Wake and Copy Address</h3><p>Connect to a sleeping computer and Hop wakes it first, then opens the session when it answers. Hop finds each computer's MAC address by itself; nothing to type. Copy the address from the detail view.</p></div>
+      <div class="card"><h3>Wakes sleeping computers</h3><p>Connect to a sleeping computer and Hop wakes it first, then opens the session when it answers. It finds each computer's MAC address by itself; nothing to type.</p></div>
+      <div class="card"><h3>Wake from anywhere</h3><p>Away from home, Hop asks another computer on that network to send the wake-up packet. <a href="#wake">How it works</a></p></div>
+      <div class="card"><h3>Local network reach</h3><p>A Mac that is awake but not back on Tailscale is still reached, over your local network, and shown as Online · Local network.</p></div>
+      <div class="card"><h3>Keeps your list current</h3><p>When Tailscale renames a device, the saved computer follows it. When a device leaves your tailnet, it is removed. Copy any address from the detail view.</p></div>
       <div class="card"><h3>Keyboard</h3><p>Open Hop from any app with a global shortcut, type to filter, and connect with ⌘1, ⌘2 or ⌘3.</p></div>
       <div class="card"><h3>Alerts</h3><p>Optionally get a notification when a saved Mac goes offline or comes back. Off until you turn it on.</p></div>
       <div class="card"><h3>Small and private</h3><p>One Swift file, no dependencies, no account, no telemetry. Your list stays on your Mac.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="wake">
+  <div class="wrap split flip">
+    <picture>
+      <source srcset="screenshots/waking-dark.png" media="(prefers-color-scheme: dark)">
+      <img class="shot" src="screenshots/waking-light.png" width="400" height="207" loading="lazy" alt="The Hop panel with three Macs. MacBook Air is offline and its row reads Waking through Studio, with a Cancel button.">
+    </picture>
+    <div>
+      <h2>Asleep is not a problem</h2>
+      <p>Choose Screen Share, SSH or Files for a computer that is asleep. Hop wakes it, waits, and opens the connection when it answers. You don't click twice.</p>
+      <ul>
+        <li><strong>Nothing to set up.</strong> Hop learns each computer's MAC address the first time it is awake on your network.</li>
+        <li><strong>At home</strong> the wake-up packet goes out on every network your Mac is on, so it works with a VPN connected.</li>
+        <li><strong>Away</strong> the packet cannot reach your home network, so Hop asks a computer that is awake there to send it. The row says which one: "Waking through Studio…".</li>
+        <li><strong>Cancel</strong> stops the wait. Hop gives up after 30 seconds, or 45 through another computer, and says "Did not wake".</li>
+      </ul>
+      <p>A helper is a computer Hop lists and has seen on the same network, reachable by SSH without a prompt. Hop only has it send the packet, installs nothing, and never stores a password. You can turn this off in Manage Macs.</p>
     </div>
   </div>
 </section>
@@ -418,7 +458,7 @@ cd hop-remote-launcher
       <p><strong>First launch.</strong> macOS may ask for Local Network access. Allow it, or every Mac stays marked offline and nothing is listed under Nearby.</p>
       <p><strong>Away from home.</strong> Install <a href="https://tailscale.com">Tailscale</a> on every Mac and they show up in Hop wherever you are, with no port forwarding.</p>
       <p><strong>Herdr workspaces.</strong> A Mac shows its workspaces when the Herdr desktop app has it as a machine (<strong>Settings → Machines</strong> in Herdr) under the same host name Hop uses.</p>
-      <p><strong>Wake-on-LAN</strong> is a packet that only travels on the local network. Hop learns a computer's MAC address the first time it is awake on your network and shows it in Manage Macs as "Found automatically"; found addresses stay on your Mac. You can also type one, as <code>aa:bb:cc:dd:ee:ff</code>, <code>AA-BB-CC-DD-EE-FF</code>, <code>aabb.ccdd.eeff</code> or <code>aabbccddeeff</code>. Choosing Screen Share, SSH or Files for an offline computer wakes it first and connects when it answers; after 30 seconds Hop says "Did not wake". Waking needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
+      <p><strong>Wake-on-LAN</strong> is a packet that only travels on the local network. Hop learns a computer's MAC address the first time it is awake on your network and shows it in Manage Macs as "Found automatically"; found addresses stay on your Mac. You can also type one, as <code>aa:bb:cc:dd:ee:ff</code>, <code>AA-BB-CC-DD-EE-FF</code>, <code>aabb.ccdd.eeff</code> or <code>aabbccddeeff</code>. Choosing Screen Share, SSH or Files for an offline computer wakes it first and connects when it answers; after 30 seconds Hop says "Did not wake", which usually means the computer is shut down, not asleep, or is on another network with no computer there to ask. Waking needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
       <p><strong>Waking from elsewhere.</strong> When your Mac is on another network, Hop asks a computer that is awake on the sleeping computer's network to send the packet, and the row reads "Waking through" and its name. The helper has to be a computer Hop lists and has seen on that network, online, and reachable by SSH without a question (test with <code>ssh name</code> in Terminal). Hop runs a short script there that only sends the packet; nothing is installed. Turn it off with Wake through other computers, under Discovery in Manage Macs.</p>
       <p><strong>Awake but not on Tailscale.</strong> A saved or Tailscale computer that is on your network but whose own address is not answering is shown as "Online · Local network", and its buttons connect over the local network. This needs Show nearby computers to be on.</p>
       <p><strong>Renamed or removed Tailscale devices.</strong> When Tailscale gives a device a new name, the saved computer follows it and keeps its settings. When a device has left your tailnet, Hop removes the saved computer after three checks in a row. Computers saved by a local name or an IP address are never changed.</p>
@@ -447,6 +487,14 @@ cd hop-remote-launcher
         <p>Yes. When your remote machines run Tailscale, Hop connects to them anywhere in the world through your encrypted private tailnet without opening ports or configuring port forwarding on your router.</p>
       </details>
       <details>
+        <summary>Can Hop wake a sleeping Mac?</summary>
+        <p>Yes. Choose Screen Share, SSH or Files for a computer that is asleep and Hop sends a Wake-on-LAN packet first, then opens the connection when the computer answers. Hop finds each computer's MAC address by itself the first time it is awake on your network, so there is nothing to type. The remote Mac needs "Wake for network access" turned on.</p>
+      </details>
+      <details>
+        <summary>Can Hop wake a computer at home when I am away?</summary>
+        <p>Yes, if another computer on that network is awake. A wake-up packet only travels on the local network, so Hop signs in over SSH to a computer it has seen on the same network and has it send the packet. The helper must accept SSH from your Mac without a prompt; test with <code>ssh name</code> in Terminal. Hop installs nothing on it and never stores a password. See <a href="#wake">Asleep is not a problem</a>.</p>
+      </details>
+      <details>
         <summary>How do I bypass the macOS Gatekeeper warning on first launch?</summary>
         <p>Because Hop is an independent open-source project without Apple Developer notarization, macOS blocks it the first time. You can go to <strong>System Settings → Privacy &amp; Security</strong> and click <strong>Open Anyway</strong>, or run <code>xattr -dr com.apple.quarantine /Applications/Hop.app</code> in your terminal.</p>
       </details>
@@ -456,7 +504,7 @@ cd hop-remote-launcher
       </details>
       <details>
         <summary>Does Hop collect telemetry, analytics, or require an account?</summary>
-        <p>No. Hop has zero telemetry, no tracking, no external network communication, and requires no account. Your saved hosts list stays strictly on your Mac in <code>~/Library/Application Support/Hop/hosts.json</code>.</p>
+        <p>No. Hop has no telemetry, no tracking and no account, and it talks only to your own computers. Your saved list and the MAC addresses Hop finds stay on your Mac in <code>~/Library/Application Support/Hop</code>.</p>
       </details>
     </div>
   </div>
