@@ -253,7 +253,7 @@
       <a class="btn" href="https://github.com/sercanatalik/hop-remote-launcher">View on GitHub</a>
     </div>
     <p class="fine">Free and open source (MIT) · macOS 13 or later · Apple silicon and Intel · <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Release notes</a></p>
-    <p class="fine new"><strong>New in 1.3:</strong> computers on your local network found automatically, Wake-on-LAN that works with a VPN connected, and a steadier Tailscale list. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/tag/v1.3.0">See what changed</a></p>
+    <p class="fine new"><strong>New in 1.4:</strong> connect to a sleeping computer and Hop wakes it first, MAC addresses found automatically, and computers reached over your local network when Tailscale is not up yet. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/tag/v1.4.0">See what changed</a></p>
 
     <div class="shots">
       <figure>
@@ -287,7 +287,7 @@
       <div class="card"><h3>Nearby</h3><p>Computers on your local network with Screen Sharing, Remote Login or File Sharing turned on appear by themselves. Add one to My Macs in a click.</p></div>
       <div class="card"><h3>Your SSH config</h3><p>Add hosts from <code>~/.ssh/config</code> in a click. SSH then uses the entry, with its port, key and jump host. A host behind a jump host shows as offline.</p></div>
       <div class="card"><h3>Windows and Linux too</h3><p>List the PCs and Linux machines on your tailnet. A Windows PC gets Remote Desktop, handed to Windows App.</p></div>
-      <div class="card"><h3>Wake and Copy Address</h3><p>In a Mac's detail view, send a Wake-on-LAN packet when you've set a MAC address, or copy the address. Wake goes out on every network your Mac is on, so it works with a VPN connected.</p></div>
+      <div class="card"><h3>Wake and Copy Address</h3><p>Connect to a sleeping computer and Hop wakes it first, then opens the session when it answers. Hop finds each computer's MAC address by itself; nothing to type. Copy the address from the detail view.</p></div>
       <div class="card"><h3>Keyboard</h3><p>Open Hop from any app with a global shortcut, type to filter, and connect with ⌘1, ⌘2 or ⌘3.</p></div>
       <div class="card"><h3>Alerts</h3><p>Optionally get a notification when a saved Mac goes offline or comes back. Off until you turn it on.</p></div>
       <div class="card"><h3>Small and private</h3><p>One Swift file, no dependencies, no account, no telemetry. Your list stays on your Mac.</p></div>
@@ -418,7 +418,9 @@ cd hop-remote-launcher
       <p><strong>First launch.</strong> macOS may ask for Local Network access. Allow it, or every Mac stays marked offline and nothing is listed under Nearby.</p>
       <p><strong>Away from home.</strong> Install <a href="https://tailscale.com">Tailscale</a> on every Mac and they show up in Hop wherever you are, with no port forwarding.</p>
       <p><strong>Herdr workspaces.</strong> A Mac shows its workspaces when the Herdr desktop app has it as a machine (<strong>Settings → Machines</strong> in Herdr) under the same host name Hop uses.</p>
-      <p><strong>Wake-on-LAN</strong> only works on the same local network. The MAC address can be written as <code>aa:bb:cc:dd:ee:ff</code>, <code>AA-BB-CC-DD-EE-FF</code>, <code>aabb.ccdd.eeff</code> or <code>aabbccddeeff</code>. It needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
+      <p><strong>Wake-on-LAN</strong> only works on the same local network. Hop learns a computer's MAC address the first time it is awake on your network and shows it in Manage Macs as "Found automatically"; found addresses stay on your Mac. You can also type one, as <code>aa:bb:cc:dd:ee:ff</code>, <code>AA-BB-CC-DD-EE-FF</code>, <code>aabb.ccdd.eeff</code> or <code>aabbccddeeff</code>. Choosing Screen Share, SSH or Files for an offline computer wakes it first and connects when it answers; after 30 seconds Hop says "Did not wake". Waking needs "Wake for network access" turned on in the remote Mac's Battery or Energy settings.</p>
+      <p><strong>Awake but not on Tailscale.</strong> A saved or Tailscale computer that is on your network but whose own address is not answering is shown as "Online · Local network", and its buttons connect over the local network. This needs Show nearby computers to be on.</p>
+      <p><strong>Renamed or removed Tailscale devices.</strong> When Tailscale gives a device a new name, the saved computer follows it and keeps its settings. When a device has left your tailnet, Hop removes the saved computer after three checks in a row. Computers saved by a local name or an IP address are never changed.</p>
       <p><strong>Windows and Linux.</strong> On a Windows PC, turn on Remote Desktop and the OpenSSH Server feature. Remote Desktop needs a remote desktop app on your Mac, such as Microsoft's free <a href="https://apps.apple.com/app/id1295203466">Windows App</a>. On Linux, run an SSH server.</p>
       <p><strong>"Tailscale isn't running" while it is.</strong> Versions before 1.1.1 showed this when Hop was opened from Finder or at login. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Update to the latest version</a>.</p>
       <p><strong>"Tailscale isn't responding".</strong> The Tailscale app did not answer within 5 seconds. Open Tailscale, or quit and reopen it; Hop checks again every 30 seconds.</p>
