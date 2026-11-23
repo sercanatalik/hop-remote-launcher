@@ -149,11 +149,17 @@ Hop needs macOS 13 or later. It runs on Apple silicon and Intel Macs.
 
 ### Homebrew
 
-Install via Homebrew:
+Add this repository as a tap, then install from it:
 
 ```bash
+brew tap sercanatalik/hop-remote-launcher https://github.com/sercanatalik/hop-remote-launcher
+brew trust sercanatalik/hop-remote-launcher
 brew install --cask sercanatalik/hop-remote-launcher/hop
 ```
+
+The first line is needed because the cask lives in this repository. The second is for Homebrew 7 and later, which loads a cask from a tap only after you trust the tap; leave it out on an older Homebrew.
+
+Always use the full name. The short name `hop` belongs to a different app in Homebrew's own catalog, so `brew install --cask hop` does not install this one. To update: `brew upgrade --cask sercanatalik/hop-remote-launcher/hop`.
 
 ### Download the app
 

@@ -364,8 +364,10 @@
       <div class="card">
         <h3>Homebrew</h3>
         <p>Install and manage updates with Homebrew.</p>
-<pre><code>brew install --cask sercanatalik/hop-remote-launcher/hop</code></pre>
-        <p class="fine">Or tap the repository directly to get releases as soon as they are tagged.</p>
+<pre><code>brew tap sercanatalik/hop-remote-launcher https://github.com/sercanatalik/hop-remote-launcher
+brew trust sercanatalik/hop-remote-launcher
+brew install --cask sercanatalik/hop-remote-launcher/hop</code></pre>
+        <p class="fine">The second line is for Homebrew 7 and later. Use the full name: the short name <code>hop</code> is a different app in Homebrew's own catalog.</p>
       </div>
 
       <div class="card">
