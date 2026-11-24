@@ -1,6 +1,6 @@
 cask "hop" do
-  version "1.5.1"
-  sha256 "5d86a122e57126a66e7c4827851c814be067583d6b9d4b9ab05ec5d35e41120e"
+  version "1.6.0"
+  sha256 "5c06bb7d1e8944a02d3d53628bf11712ae55da81a269c96a88769a9c8eceec09"
 
   url "https://github.com/sercanatalik/hop-remote-launcher/releases/download/v#{version}/Hop.zip",
       verified: "github.com/sercanatalik/hop-remote-launcher/"
