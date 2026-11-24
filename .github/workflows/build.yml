@@ -32,6 +32,9 @@ jobs:
             echo "VERSION=0.0.0-dev.${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           fi
 
+      - name: Run checks
+        run: ./test.sh
+
       - name: Build universal app
         run: UNIVERSAL=1 ./build.sh
 
