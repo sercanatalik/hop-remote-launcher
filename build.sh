@@ -7,10 +7,20 @@
 # Environment:
 #   UNIVERSAL=1      build one app for both Apple silicon and Intel
 #   VERSION=1.6.0    version shown in About (default: 1.5.1)
+#   SDKROOT=/path    SDK to build against (default: the macOS 26.5 SDK if installed)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 command -v swiftc >/dev/null || { echo "swiftc not found. Run: xcode-select --install"; exit 1; }
+
+# The macOS 27 SDK in the Command Line Tools makes @State a macro whose plugin only ships
+# with full Xcode, so the build fails there. Pin the 26.5 SDK when it is installed.
+# Set SDKROOT yourself to override.
+PINNED_SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+if [[ -z "${SDKROOT:-}" && -d "$PINNED_SDK" ]]; then
+  export SDKROOT="$PINNED_SDK"
+  echo "Using SDK: $SDKROOT"
+fi
 
 APP="build/Hop.app"
 VERSION="${VERSION:-1.5.1}"
