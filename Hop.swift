@@ -61,11 +61,12 @@ struct RemoteMac: Codable, Identifiable, Hashable {
     var sshAlias: String = ""  // its entry in ~/.ssh/config, when it was added from there
     var sshPort: Int = 0       // that entry's SSH port; 0 means the usual 22
     var origin: Origin = .saved   // where the row came from; a found one is not in My Macs yet (not saved)
+    var links: [HostLink] = [] // named links shown in its detail view; absent in lists saved before links existed
 
     /// My Macs, or one of the two places Hop finds computers by itself.
     enum Origin { case saved, tailscale, nearby }
 
-    enum CodingKeys: String, CodingKey { case id, name, host, user, mac, platform, sshAlias, sshPort }
+    enum CodingKeys: String, CodingKey { case id, name, host, user, mac, platform, sshAlias, sshPort, links }
 
     init() {}
 
@@ -79,6 +80,309 @@ struct RemoteMac: Codable, Identifiable, Hashable {
         platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .mac
         sshAlias = (try? c.decode(String.self, forKey: .sshAlias)) ?? ""
         sshPort  = (try? c.decode(Int.self, forKey: .sshPort)) ?? 0
+        links    = (try? c.decode([HostLink].self, forKey: .links)) ?? []
+    }
+
+    /// Links are written only where there are some, so a list without them is what it always was.
+    /// One with no name or no address is not kept.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(host, forKey: .host)
+        try c.encode(user, forKey: .user)
+        try c.encode(mac, forKey: .mac)
+        try c.encode(platform, forKey: .platform)
+        try c.encode(sshAlias, forKey: .sshAlias)
+        try c.encode(sshPort, forKey: .sshPort)
+        let kept = links.filter(\.complete)
+        if !kept.isEmpty { try c.encode(Array(kept.prefix(HostLink.limit)), forKey: .links) }
+    }
+}
+
+// MARK: - Links
+
+/// A named link kept with a saved computer: a web page it serves, another port, anything with an
+/// address. `{host}` in the address stands for wherever Hop reaches the computer right now.
+struct HostLink: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var name = ""
+    var address = ""
+
+    /// How many links one computer can carry.
+    static let limit = 8
+    static let placeholder = "{host}"
+
+    init() {}
+
+    init(name: String, address: String) {
+        self.name = name
+        self.address = address
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id      = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        name    = (try? c.decode(String.self, forKey: .name)) ?? ""
+        address = (try? c.decode(String.self, forKey: .address)) ?? ""
+    }
+
+    /// Whether the link points at the computer itself, so that opening it is connecting to it.
+    var usesHost: Bool { address.contains(Self.placeholder) }
+
+    /// Both a name and an address: anything less is not kept.
+    var complete: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && !address.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Whether text starts with a scheme. "nas.local:5000" does not: what follows the colon there
+    /// is a port number, so the colon belongs to an address typed without a scheme.
+    static func hasScheme(_ text: String) -> Bool {
+        guard let colon = text.firstIndex(of: ":"), let first = text.first, first.isLetter, first.isASCII else { return false }
+        let scheme = text[..<colon]
+        guard scheme.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "+-.".contains($0)) }) else { return false }
+        let rest = text[text.index(after: colon)...]
+        if rest.hasPrefix("//") { return true }
+        let digits = rest.prefix { $0.isNumber }
+        // host:port, host:port/path
+        if !digits.isEmpty, digits.endIndex == rest.endIndex || "/?#".contains(rest[digits.endIndex]) { return false }
+        return !rest.isEmpty
+    }
+
+    /// The address to open for a computer reached at `host`, or nil when the text cannot be made
+    /// into one. Without a scheme it is a web address; a file on this Mac is never opened.
+    func url(host: String) -> URL? {
+        var text = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if usesHost {
+            var h = host.trimmingCharacters(in: .whitespaces)
+            guard !h.isEmpty else { return nil }
+            if h.contains(":"), !h.hasPrefix("[") { h = "[\(h)]" }     // an IPv6 address
+            text = text.replacingOccurrences(of: Self.placeholder, with: h)
+        }
+        if !Self.hasScheme(text) { text = "http://" + text }
+        guard let c = URLComponents(string: text), let scheme = c.scheme?.lowercased(), scheme != "file",
+              !(c.host ?? "").isEmpty || !c.path.isEmpty else { return nil }
+        return c.url
+    }
+
+    /// The port that has to answer before the link is worth opening, where the address tells;
+    /// nil means any of the computer's services will do.
+    func port(host: String) -> UInt16? {
+        guard let u = url(host: host) else { return nil }
+        if let p = u.port, let port = UInt16(exactly: p) { return port }
+        switch u.scheme?.lowercased() {
+        case "http":          return 80
+        case "https":         return 443
+        case "vnc":           return Probe.vnc
+        case "ssh", "sftp":   return Probe.ssh
+        case "smb":           return Probe.smb
+        case "rdp":           return Probe.rdp
+        default:              return nil
+        }
+    }
+}
+
+// MARK: - Diagnosis
+
+/// What Hop can say about why a computer is not reachable or one of its actions is dimmed. It is
+/// worked out from what the regular checks already found, never from a new connection, and it
+/// says nothing Hop cannot observe: why a sign-in was refused, for one.
+enum Diagnosis {
+    enum TailscaleFact: Equatable { case connected, offline(Date?), notListed, notRunningHere, signedOutHere }
+    enum LocalFact: Equatable { case answering(String), asleep, silent, notFound }
+    enum WakeFact: Equatable { case ready, through([String]), noHelper, unknown }
+    enum SleepFailure: Equatable { case signIn, refused }
+    enum Action: Equatable { case openTailscale }
+
+    struct Facts {
+        var name: String
+        var platform: Platform = .mac
+        var hasNetwork = true
+        /// Nil while the first check has not answered.
+        var online: Bool?
+        /// Nil for a computer without a Tailscale address, or while Tailscale has not answered.
+        var tailscale: TailscaleFact?
+        /// Nil while Nearby is off, and for a computer that answers at its own address.
+        var local: LocalFact?
+        /// Reached only through the local network.
+        var routedLocally = false
+        /// The ports that answered at the last check; nil when it is not online or not checked.
+        var services: Set<UInt16>?
+        var wake: WakeFact = .unknown
+        var wakeFailed = false
+        var wakeHelper: String?
+        var sleepFailed: SleepFailure?
+        /// The user put it to sleep from Hop, and has not connected to it since.
+        var sleptOnRequest = false
+    }
+
+    struct Line: Equatable {
+        let label: String
+        let value: String
+    }
+
+    static func desktopService(_ p: Platform) -> String { p == .windows ? "Remote Desktop" : "Screen Sharing" }
+
+    /// The services of an online computer that did not answer, by name, in the order they are shown.
+    static func off(_ f: Facts) -> [String] {
+        guard f.online == true, let open = f.services else { return [] }
+        var names: [String] = []
+        if !open.contains(f.platform.desktopPort) { names.append(desktopService(f.platform)) }
+        if !open.contains(Probe.ssh) { names.append("SSH") }
+        if !open.contains(Probe.smb) { names.append("File Sharing") }
+        return names
+    }
+
+    /// Whether there is anything to explain.
+    static func applies(_ f: Facts) -> Bool {
+        f.online == false || f.wakeFailed || f.sleepFailed != nil || f.routedLocally || !off(f).isEmpty
+    }
+
+    static func lines(_ f: Facts, now: Date = Date()) -> [Line] {
+        var lines: [Line] = []
+        if let t = f.tailscale {
+            let value: String
+            switch t {
+            case .connected:        value = "connected"
+            case .offline(let seen?):
+                let relative = RelativeDateTimeFormatter()
+                relative.unitsStyle = .full
+                relative.locale = Locale(identifier: "en_US")
+                value = "offline, last seen " + relative.localizedString(for: seen, relativeTo: now)
+            case .offline(nil):     value = "offline"
+            case .notListed:        value = "not on your tailnet"
+            case .notRunningHere:   value = "not running on this Mac"
+            case .signedOutHere:    value = "signed out on this Mac"
+            }
+            lines.append(Line(label: "Tailscale", value: value))
+        }
+        if let l = f.local {
+            let value: String
+            switch l {
+            case .answering(let host): value = "answering at \(host)"
+            case .asleep:              value = "asleep, another device is answering for it"
+            case .silent:              value = "found, not answering"
+            case .notFound:            value = "not found"
+            }
+            lines.append(Line(label: "Local network", value: value))
+        }
+        if f.online == true, let open = f.services {
+            let parts = [(desktopService(f.platform), f.platform.desktopPort), ("SSH", Probe.ssh), ("File Sharing", Probe.smb)]
+            lines.append(Line(label: "Services", value: parts.map { "\($0.0) \(open.contains($0.1) ? "on" : "off")" }.joined(separator: " · ")))
+        }
+        let wake: String
+        switch f.wake {
+        case .ready:              wake = "ready"
+        case .through(let names): wake = "ready, through " + names.joined(separator: ", ")
+        case .noHelper:           wake = "no computer at home can pass it on"
+        case .unknown:            wake = "no hardware address known"
+        }
+        lines.append(Line(label: "Wake", value: wake))
+        return lines
+    }
+
+    /// The one sentence under the facts: the first reason that applies, most telling first.
+    static func conclusion(_ f: Facts) -> (text: String, action: Action?)? {
+        guard applies(f) else { return nil }
+        switch f.sleepFailed {
+        case .signIn?:
+            return ("Hop could not sign in to \(f.name) over SSH without a question. Sleep needs SSH that works without a password.", nil)
+        case .refused?:
+            return ("\(f.name) did not accept the request to sleep. Its account may not be allowed to put it to sleep.", nil)
+        case nil: break
+        }
+        if !f.hasNetwork { return ("This Mac is not connected to a network.", nil) }
+        if f.online != true {
+            if f.tailscale == .notRunningHere { return ("Tailscale is not running on this Mac.", .openTailscale) }
+            if f.tailscale == .signedOutHere { return ("Tailscale is signed out on this Mac.", .openTailscale) }
+        }
+        if f.online == false, f.sleptOnRequest {
+            switch f.wake {
+            case .ready, .through:    return ("You put it to sleep from Hop. Connecting wakes it.", nil)
+            case .noHelper, .unknown: return ("You put it to sleep from Hop. Hop cannot wake it from here.", nil)
+            }
+        }
+        if f.online == false, f.local == .asleep { return ("It is asleep. Connecting wakes it.", nil) }
+        if f.wakeFailed {
+            let sent = f.wakeHelper.map { "The wake-up packet was sent through \($0)" } ?? "The wake-up packet was sent"
+            return (sent + " and it did not answer. It may be powered off, on Wi-Fi only, or have Wake for network access turned off.", nil)
+        }
+        if f.routedLocally {
+            switch f.tailscale {
+            case .offline?:
+                return ("Tailscale is not running on it. It may have restarted and be waiting for someone to log in.", nil)
+            case .notListed?:
+                return ("It is no longer on your tailnet. Hop is reaching it on the local network instead.", nil)
+            default:
+                return ("Its saved address does not answer. Hop is reaching it on the local network instead.", nil)
+            }
+        }
+        let off = off(f)
+        if !off.isEmpty {
+            let what = off.count == 1 ? "\(off[0]) appears to be off."
+                : off.dropLast().joined(separator: ", ") + " and \(off[off.count - 1]) appear to be off."
+            guard f.platform == .mac else { return (what, nil) }
+            return (what + " Turn \(off.count == 1 ? "it" : "them") on in System Settings › General › Sharing on that Mac.", nil)
+        }
+        switch f.wake {
+        case .ready, .through:
+            return ("It is off, asleep or on another network. Connecting tries to wake it.", nil)
+        case .noHelper:
+            return ("It is off, asleep or on another network. No computer at home can pass on the wake-up packet.", nil)
+        case .unknown:
+            return ("It is off, asleep or on another network. Hop cannot wake it without its hardware address.", nil)
+        }
+    }
+}
+
+// MARK: - Sleep
+
+/// Putting a computer to sleep: one fixed command per platform, sent over `ssh` in the way that
+/// never asks anything (see `Relay.options`). Nothing typed by the user reaches the other shell.
+enum RemoteSleep {
+    /// How long `ssh` itself gets.
+    static let runLimit: Double = 10
+    /// Printed by the other computer before it sleeps, so a sign-in that worked can be told from
+    /// one that did not even when the connection drops as the computer goes down.
+    static let marker = "hop-sleep"
+
+    /// What the computer is asked to run: the system's own "sleep now", with no rights asked for.
+    static func command(for platform: Platform) -> [String]? {
+        switch platform {
+        case .mac:     return ["echo", marker, "&&", "/usr/bin/pmset", "sleepnow"]
+        case .linux:   return ["echo", marker, "&&", "systemctl", "suspend"]
+        case .windows: return nil
+        }
+    }
+
+    static func arguments(_ m: RemoteMac, configured: [SSHHost]) -> [String]? {
+        guard let command = command(for: m.platform), let destination = Relay.destination(m, configured: configured) else { return nil }
+        return Relay.options + destination + command
+    }
+
+    /// Whether Sleep is offered: a Mac or Linux computer that is online with SSH answering, and
+    /// not in the middle of being woken or put to sleep.
+    static func offered(platform: Platform, online: Bool, ssh: Bool, busy: Bool) -> Bool {
+        command(for: platform) != nil && online && ssh && !busy
+    }
+
+    /// Whether to ask first: only when Hop could not wake the computer again afterwards.
+    static func needsConfirmation(_ wake: Diagnosis.WakeFact) -> Bool {
+        switch wake {
+        case .ready, .through:   return false
+        case .noHelper, .unknown: return true
+        }
+    }
+
+    /// Nil when the computer took the request. Hop does not wait to see it fall silent: a Mac
+    /// goes on answering for half a minute while it goes down, and one on Ethernet answers even
+    /// asleep. An `ssh` that ended badly after signing in, or was cut off, lost the connection to
+    /// a computer that was going down; any other status is the computer's own refusal.
+    static func failure(signedIn: Bool, status: Int32, timedOut: Bool) -> Diagnosis.SleepFailure? {
+        if !signedIn { return .signIn }
+        if timedOut || status == 0 || status == 255 { return nil }
+        return .refused
     }
 }
 
@@ -1310,7 +1614,7 @@ final class Store: ObservableObject {
             guard let self, self.showNearby else { return }
             self.nearbyPeers = peers
             self.rebuildNearby()
-            self.probeNearby()
+            self.probeNearby(.timer)
             self.checkLocalRoutes()
         }
     }
@@ -1347,7 +1651,28 @@ final class Store: ObservableObject {
     static let relayedWakeLimit: TimeInterval = 45
     /// Computers that did not answer after a wake, until their next check.
     @Published private(set) var wakeFailed: Set<UUID> = []
+    /// The helper that sent the packet for a wake that failed, for saying so afterwards.
+    private var wakeFailedHelper: [UUID: String] = [:]
     private var wakeTasks: [UUID: Task<Void, Never>] = [:]
+    /// Rows whose local address another device is answering for while they sleep. The regular
+    /// checks leave such an address alone, and the row is called asleep instead of offline.
+    @Published private(set) var heldLocally: Set<UUID> = []
+    /// Computers that were asked to sleep and are being watched go.
+    @Published private(set) var sleeping: Set<UUID> = []
+    /// Why a computer did not go to sleep, until its next check.
+    @Published private(set) var sleepFailed: [UUID: Diagnosis.SleepFailure] = [:]
+    /// Computers the user put to sleep from Hop. A sleeping Mac on Ethernet still accepts a
+    /// connection, half waking for it, so no check can tell it from one that is awake: Hop takes
+    /// its own word instead and leaves the computer alone until the user connects or refreshes.
+    @Published private(set) var sleptOnRequest: Set<UUID> = []
+    /// When each row was last knocked on at a local-network address.
+    private var lastKnock: [UUID: Date] = [:]
+    private var lastLearn = Date.distantPast
+    /// What Tailscale last said about each device, by full name, short name and address.
+    private var tailnetPeers: [String: (online: Bool, seen: Date?)] = [:]
+    private var tailnetRoster: TailnetRoster?
+    /// The network this Mac is on, as of the last check; nil when it cannot be told.
+    private var hereNetwork: String?
     /// How long a woken computer gets to answer.
     static let wakeLimit: TimeInterval = 30
 
@@ -1381,6 +1706,7 @@ final class Store: ObservableObject {
     }
     private var agents = AgentTracker()
     private let agentLog = Logger(subsystem: "io.github.sercanatalik.hop", category: "agents")
+    private let reachLog = Logger(subsystem: "io.github.sercanatalik.hop", category: "reach")
     /// The agents the summary notification in Notification Center stands for.
     private var summaryKeys = Set<String>()
 
@@ -1440,7 +1766,7 @@ final class Store: ObservableObject {
         if showNearby { nearbyBrowser.start() }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.refresh(.timer) }
         }
     }
 
@@ -1463,21 +1789,56 @@ final class Store: ObservableObject {
         if let data = try? enc.encode(hosts) { try? data.write(to: fileURL, options: .atomic) }
     }
 
-    func refresh() {
+    /// Why a check runs: by the clock, because the panel or a window was opened, or because the
+    /// user pressed Refresh.
+    enum Check { case timer, opened, asked }
+
+    /// Whether a row may be knocked on at a local-network address now. A connection to a sleeping
+    /// Mac's service half wakes it, so by the clock this happens seldom; when the user is looking,
+    /// at once.
+    private func knockDue(_ id: UUID, _ why: Check) -> Bool {
+        LocalNet.knockDue(last: lastKnock[id], now: Date(), looking: why != .timer)
+    }
+
+    func refresh(_ why: Check = .opened) {
+        if why == .asked, !sleptOnRequest.isEmpty { sleptOnRequest = [] }
         let quiet = quietNextCheck
         quietNextCheck = false
         if !wakeFailed.isEmpty { wakeFailed = [] }
-        for m in hosts where !m.host.trimmingCharacters(in: .whitespaces).isEmpty {
+        if !wakeFailedHelper.isEmpty { wakeFailedHelper = [:] }
+        if !sleepFailed.isEmpty { sleepFailed = [:] }
+        hereNetwork = LocalNet.network(router: LocalNet.router(), networks: LocalNet.networks(), neighbours: LocalNet.neighbours())?.id
+        for m in hosts where !m.host.trimmingCharacters(in: .whitespaces).isEmpty && !sleptOnRequest.contains(m.id) {
             let id = m.id, name = m.name, host = m.host.trimmingCharacters(in: .whitespaces), sshPort = m.sshPort
+            let ownIsLocal = LocalNet.mayBeLocal(host), due = knockDue(id, why)
+            // A computer saved by a local address is looked at when a knock is due, and not between.
+            if ownIsLocal {
+                guard due else { continue }
+                lastKnock[id] = Date()
+            }
             Task {
-                var open = await Probe.services(host: host, sshPort: sshPort)
+                // A local address another device answers for while the computer sleeps is not
+                // connected to: that would wake it.
+                var held = ownIsLocal ? await self.asleep(host, m) : false
+                var open = held ? [:] : await Probe.services(host: host, sshPort: sshPort)
                 var route: String?
                 // Its own address is silent: the same computer may still answer on the local network.
-                if open.isEmpty, let local = self.localHost(for: m), !(await self.asleep(local, m)) {
-                    let there = await Probe.services(host: local, sshPort: sshPort)
-                    if !there.isEmpty { open = there; route = local }
+                if open.isEmpty, !held, let local = self.localHost(for: m) {
+                    held = await self.asleep(local, m)
+                    if !held {
+                        // Between knocks, one that was reached locally stays as it was found.
+                        guard due else {
+                            self.mark(id, held: false)
+                            if self.localRoute[id] != local { self.online[id] = false; self.localRoute[id] = nil }
+                            return
+                        }
+                        self.lastKnock[id] = Date()
+                        let there = await Probe.services(host: local, sshPort: sshPort)
+                        if !there.isEmpty { open = there; route = local }
+                    }
                 }
                 let up = !open.isEmpty      // online when any service answers
+                self.mark(id, held: held)
                 self.online[id] = up
                 if self.localRoute[id] != route { self.localRoute[id] = route }
                 self.services[id] = Set(open.keys)
@@ -1485,10 +1846,13 @@ final class Store: ObservableObject {
                 self.noteReach(id, name: name, online: up, quiet: quiet)
             }
         }
-        refreshTailscale()
-        probeNearby()
+        refreshTailscale(why)
+        probeNearby(why)
         refreshHerdr()
-        // Learning looks at what this check finds, so it follows once the answers are in.
+        // Learning looks at what this check finds, so it follows once the answers are in. It
+        // connects to local addresses, so by the clock it runs as seldom as a knock.
+        guard why != .timer || Date().timeIntervalSince(lastLearn) >= LocalNet.knockGap else { return }
+        lastLearn = Date()
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             learnAddresses()
@@ -1749,7 +2113,7 @@ final class Store: ObservableObject {
         showAgentStatus ? Herdr.banners(listedSpaces) : ([], 0)
     }
 
-    func refreshTailscale() {
+    func refreshTailscale(_ why: Check = .opened) {
         guard showTailscale else {
             tailnet = []
             tailscaleState = .unknown
@@ -1765,6 +2129,12 @@ final class Store: ObservableObject {
             }
             guard showTailscale else { return }
             if let roster { followTailnet(roster, peers) }
+            tailnetRoster = roster
+            var said: [String: (online: Bool, seen: Date?)] = [:]
+            for p in peers {
+                for name in [Learned.key(p.host), Nearby.short(p.host)] + p.ips { said[name] = (p.online, p.lastSeen) }
+            }
+            tailnetPeers = said
             // Skip peers you've already saved under "My Macs".
             let saved = Set(hosts.map { $0.host.lowercased().trimmingCharacters(in: .whitespaces) })
             let oldIDs = Dictionary(tailnet.map { ($0.host, $0.id) }, uniquingKeysWith: { a, _ in a })
@@ -1790,8 +2160,11 @@ final class Store: ObservableObject {
                 m.origin = .tailscale
                 list.append(m)
                 lastSeen[m.id] = p.lastSeen
-                if p.online {
+                if sleptOnRequest.contains(m.id) {
+                    online[m.id] = false    // put to sleep from Hop: taken at its word, and left alone
+                } else if p.online {
                     online[m.id] = true
+                    mark(m.id, held: false)
                     if localRoute[m.id] != nil { localRoute[m.id] = nil }
                 } else {
                     // One reached through the local network stays as it is until that is checked below.
@@ -1806,11 +2179,19 @@ final class Store: ObservableObject {
                 let id = m.id
                 guard let local = localHost(for: m) else {
                     online[id] = false
+                    mark(id, held: false)
                     if localRoute[id] != nil { localRoute[id] = nil }
                     continue
                 }
+                let due = knockDue(id, why)
                 Task {
-                    let open = await self.asleep(local, m) ? [:] : await Probe.services(host: local)
+                    let held = await self.asleep(local, m)
+                    guard self.tailnet.contains(where: { $0.id == id }) else { return }
+                    self.mark(id, held: held)
+                    // Between knocks it stays as it was found.
+                    if !held, !due { return }
+                    if !held { self.lastKnock[id] = Date() }
+                    let open = held ? [:] : await Probe.services(host: local)
                     guard self.tailnet.contains(where: { $0.id == id }) else { return }
                     self.online[id] = !open.isEmpty
                     self.localRoute[id] = open.isEmpty ? nil : local
@@ -1850,21 +2231,47 @@ final class Store: ObservableObject {
             m.platform = p.isMac ? .mac : .linux
             m.origin = .nearby
             list.append(m)
-            online[m.id] = true     // it is advertising, so it is there
+            // It is advertising, so it is there; unless another device is advertising for it.
+            if !heldLocally.contains(m.id), !sleptOnRequest.contains(m.id) { online[m.id] = true }
         }
         if list != nearby { nearby = list }
     }
 
     /// Checks which services each nearby computer accepts, for dimming its buttons and its response time.
-    func probeNearby() {
-        for m in nearby {
+    func probeNearby(_ why: Check = .opened) {
+        for m in nearby where !sleptOnRequest.contains(m.id) {
             let id = m.id, host = m.host
+            // One that has never been looked at is looked at once; after that, when a knock is due.
+            let due = services[id] == nil || knockDue(id, why)
             Task {
+                // Asleep with another device answering for it: left alone, and said to be asleep.
+                // What it accepted when it was last awake stays, so its buttons do not change.
+                let held = await self.asleep(host, m)
+                guard self.nearby.contains(where: { $0.id == id }) else { return }
+                self.mark(id, held: held)
+                if held {
+                    self.online[id] = false
+                    return
+                }
+                guard due else { return }
+                self.lastKnock[id] = Date()
                 let open = await Probe.services(host: host)
                 guard self.nearby.contains(where: { $0.id == id }) else { return }
+                self.online[id] = true
                 self.services[id] = Set(open.keys)
                 self.latency[id] = open.values.min()
             }
+        }
+    }
+
+    private func mark(_ id: UUID, held: Bool) {
+        guard held != heldLocally.contains(id) else { return }
+        if held { heldLocally.insert(id) } else { heldLocally.remove(id) }
+        let name = mac(id)?.name ?? "A computer"
+        if held {
+            reachLog.info("\(name, privacy: .public): another device answers for its local address, so it is left alone")
+        } else {
+            reachLog.info("\(name, privacy: .public): its local address is its own again")
         }
     }
 
@@ -1932,16 +2339,27 @@ final class Store: ObservableObject {
     private func asleep(_ local: String, _ m: RemoteMac) async -> Bool {
         let known = Set(wakeAddresses(for: m).map(LocalNet.format))
         guard let ip = await LocalNet.resolve(local) else { return false }
-        return LocalNet.heldByAnother(ip: ip, known: known, neighbours: LocalNet.neighbours())
+        var table = LocalNet.neighbours()
+        if table[ip] == nil, LocalNet.onLink(ip, networks: LocalNet.networks()) {
+            // Nothing is known about who holds the address yet. Asking costs one datagram that no
+            // service listens for, where finding out by connecting would wake a sleeping computer.
+            LocalNet.ask(ip)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            table = LocalNet.neighbours()
+        }
+        return LocalNet.heldByAnother(ip: ip, known: known, neighbours: table)
     }
 
     /// When the browser finds something new, an offline row may turn out to be on the local network.
     private func checkLocalRoutes() {
-        for m in hosts + tailnet where online[m.id] == false && localRoute[m.id] == nil {
-            guard let local = localHost(for: m) else { continue }
+        for m in hosts + tailnet where online[m.id] == false && localRoute[m.id] == nil && !sleptOnRequest.contains(m.id) {
+            guard let local = localHost(for: m), knockDue(m.id, .timer) else { continue }
+            lastKnock[m.id] = Date()
             let id = m.id, sshPort = m.sshPort
             Task {
-                guard !(await self.asleep(local, m)) else { return }
+                let held = await self.asleep(local, m)
+                if self.online[id] == false { self.mark(id, held: held) }
+                guard !held else { return }
                 let open = await Probe.services(host: local, sshPort: sshPort)
                 guard !open.isEmpty, self.online[id] == false, self.mac(id) != nil else { return }
                 self.online[id] = true
@@ -1969,6 +2387,7 @@ final class Store: ObservableObject {
     func canWake(_ m: RemoteMac) -> Bool { !wakeAddresses(for: m).isEmpty }
 
     func wake(_ m: RemoteMac) {
+        sleptOnRequest.remove(m.id)
         let addresses = wakeAddresses(for: m)
         Actions.wake(addresses)
         relayWake(for: m, addresses: addresses) { _ in }
@@ -2038,7 +2457,7 @@ final class Store: ObservableObject {
         for m in hosts + tailnet + nearby {
             let key = Learned.key(m.host)
             guard !key.isEmpty else { continue }
-            if let ip = tailnetLocalIP[key] ?? tailnetLocalIP[Nearby.short(m.host)] { targets.append((key, ip, m.sshPort)) }
+            if online[m.id] == true, let ip = tailnetLocalIP[key] ?? tailnetLocalIP[Nearby.short(m.host)] { targets.append((key, ip, m.sshPort)) }
             // Only one that is known to be awake: a sleeping computer is not knocked on to learn from it.
             if online[m.id] == true, let local = localHost(for: m) { targets.append((key, local, m.sshPort)) }
             if online[m.id] == true, localRoute[m.id] == nil { targets.append((key, m.host, m.sshPort)) }
@@ -2090,6 +2509,7 @@ final class Store: ObservableObject {
     /// stays open meanwhile. Anything else connects at once, as it always did.
     func connect(_ action: ConnectAction, _ m: RemoteMac) {
         cancelWake(m.id)
+        sleptOnRequest.remove(m.id)     // connecting wakes it: it is checked again from here on
         let addresses = wakeAddresses(for: m)
         guard online[m.id] == false, !addresses.isEmpty else {
             Popover.close()
@@ -2118,14 +2538,17 @@ final class Store: ObservableObject {
                 }
             }
             guard !Task.isCancelled else { return }
+            let helper = waking[id]?.helper
             waking[id] = nil
             wakeTasks[id] = nil
             guard let target else {
                 wakeFailed.insert(id)
+                wakeFailedHelper[id] = helper
                 NSSound.beep()
                 return
             }
             online[id] = true
+            mark(id, held: false)
             Popover.close()
             Actions.open(action, target)
             refresh()
@@ -2145,15 +2568,16 @@ final class Store: ObservableObject {
     /// local one, or nil while neither does. A Mac accepts SSH some seconds before Screen Sharing,
     /// so it is the port of the action asked for that counts.
     private func answering(_ action: ConnectAction, _ m: RemoteMac) async -> RemoteMac? {
-        let port: UInt16
+        let port: UInt16?
         switch action {
         case .desktop: port = m.platform.desktopPort
         case .ssh:     port = (1...65535).contains(m.sshPort) ? UInt16(m.sshPort) : Probe.ssh
         case .files:   port = Probe.smb
+        case .link(let link): port = link.port(host: m.host)    // nil: any service will do
         }
         let host = m.host.trimmingCharacters(in: .whitespaces)
         let local = localHost(for: m)
-        async let own = Probe.tcp(host: host, port: port, timeout: 1.5)
+        async let own = Store.answers(host, port)
         async let near = Store.answers(local, port)
         let (here, there) = await (own, near)
         if here {
@@ -2167,9 +2591,143 @@ final class Store: ObservableObject {
         return nil
     }
 
-    private nonisolated static func answers(_ host: String?, _ port: UInt16) async -> Bool {
+    private nonisolated static func answers(_ host: String?, _ port: UInt16?) async -> Bool {
         guard let host else { return false }
+        guard let port else { return !(await Probe.services(host: host)).isEmpty }
         return await Probe.tcp(host: host, port: port, timeout: 1.5)
+    }
+
+    // MARK: Diagnosis
+
+    /// "Online", "Asleep", "Offline" or "Checking". Asleep is said only on evidence: another device
+    /// is answering for the computer's local address.
+    func stateWord(_ m: RemoteMac) -> String {
+        switch online[m.id] {
+        case true?:  return "Online"
+        case false?: return heldLocally.contains(m.id) || sleptOnRequest.contains(m.id) ? "Asleep" : "Offline"
+        case nil:    return "Checking"
+        }
+    }
+
+    /// What Tailscale has to say about a row, or nil when it has no Tailscale address.
+    private func tailscaleFact(_ m: RemoteMac) -> Diagnosis.TailscaleFact? {
+        guard showTailscale else { return nil }
+        let key = Learned.key(m.host)
+        let peer = tailnetPeers[key] ?? tailnetPeers[Nearby.short(m.host)]
+        let underSuffix = tailnetRoster.map { key.hasSuffix("." + $0.suffix) } ?? false
+        // Tailscale hands out addresses from 100.64.0.0/10.
+        let ownRange = LocalNet.ipv4(key).map { $0 >> 22 == (100 << 2 | 1) } ?? false
+        guard m.origin == .tailscale || peer != nil || underSuffix || key.hasSuffix(".ts.net") || ownRange else { return nil }
+        switch tailscaleState {
+        case .unknown:
+            return nil
+        case .notInstalled:
+            return .notRunningHere
+        case .notRunning(let message):
+            return message.lowercased().contains("sign in") ? .signedOutHere : .notRunningHere
+        case .running:
+            if let peer { return peer.online ? .connected : .offline(peer.seen) }
+            if let roster = tailnetRoster, underSuffix, !roster.names.contains(key) { return .notListed }
+            return nil
+        }
+    }
+
+    private func localFact(_ m: RemoteMac) -> Diagnosis.LocalFact? {
+        guard showNearby else { return nil }
+        let up = online[m.id] == true
+        if !up, heldLocally.contains(m.id) { return .asleep }
+        if up, let local = localRoute[m.id] { return .answering(local) }
+        if m.origin == .nearby { return up ? .answering(m.host) : .silent }
+        if up { return nil }      // it answers at its own address: nothing to add
+        let found = Nearby.match(nearbyPeers, host: m.host, name: m.name, thisHost: Nearby.thisHost) != nil
+        return found ? .silent : .notFound
+    }
+
+    /// Whether Hop could wake a computer from where this Mac is now, and through whom.
+    func wakeFact(_ m: RemoteMac) -> Diagnosis.WakeFact {
+        guard canWake(m) else { return .unknown }
+        guard let network = Learned.network(of: Learned.key(m.host), in: learned),
+              Relay.needed(target: network.id, here: hereNetwork), wakeThroughOthers else { return .ready }
+        let names = helpers(for: m).map(\.name)
+        return names.isEmpty ? .noHelper : .through(names)
+    }
+
+    /// Everything the diagnosis says about a row, from what the checks already found.
+    func facts(for m: RemoteMac) -> Diagnosis.Facts {
+        var f = Diagnosis.Facts(name: m.name, platform: m.platform)
+        f.hasNetwork = hasNetwork
+        f.online = online[m.id]
+        f.tailscale = tailscaleFact(m)
+        f.local = localFact(m)
+        f.routedLocally = online[m.id] == true && localRoute[m.id] != nil
+        f.services = online[m.id] == true ? services[m.id] : nil
+        f.wake = wakeFact(m)
+        f.wakeFailed = wakeFailed.contains(m.id)
+        f.wakeHelper = wakeFailedHelper[m.id]
+        f.sleepFailed = sleepFailed[m.id]
+        f.sleptOnRequest = sleptOnRequest.contains(m.id)
+        return f
+    }
+
+    // MARK: Sleep
+
+    func canSleep(_ m: RemoteMac) -> Bool {
+        RemoteSleep.offered(platform: m.platform, online: online[m.id] == true,
+                            ssh: services[m.id]?.contains(Probe.ssh) == true,
+                            busy: waking[m.id] != nil || sleeping.contains(m.id))
+    }
+
+    /// Hop asks first when it would have no way to wake the computer again.
+    func sleepNeedsConfirmation(_ m: RemoteMac) -> Bool { RemoteSleep.needsConfirmation(wakeFact(m)) }
+
+    /// Asks a computer to sleep over SSH. Once it has taken the request it is shown as asleep and
+    /// left out of the checks, until the user connects to it or presses Refresh.
+    func sleep(_ m: RemoteMac) {
+        let target = routed(m)
+        guard canSleep(m), let arguments = RemoteSleep.arguments(target, configured: SSHConfig.hosts() ?? []) else {
+            NSSound.beep()
+            return
+        }
+        let id = m.id
+        if sleepFailed[id] != nil { sleepFailed[id] = nil }
+        sleeping.insert(id)
+        Task {
+            let result = await Shell.run("/usr/bin/ssh", arguments, timeout: RemoteSleep.runLimit)
+            let signedIn = result.map { String(decoding: $0.out, as: UTF8.self).contains(RemoteSleep.marker) } ?? false
+            sleeping.remove(id)
+            reachLog.info("Sleep for \(m.name, privacy: .public): signed in \(signedIn), ssh status \(result?.status ?? -1)")
+            if let failure = RemoteSleep.failure(signedIn: signedIn, status: result?.status ?? -1, timedOut: result?.timedOut ?? false) {
+                sleepFailed[id] = failure
+                NSSound.beep()
+                return
+            }
+            sleptOnRequest.insert(id)
+            online[id] = false
+            if localRoute[id] != nil { localRoute[id] = nil }
+        }
+    }
+
+    // MARK: Links
+
+    /// The links of a saved computer that can be opened, in the order entered.
+    func links(for m: RemoteMac) -> [HostLink] {
+        guard m.origin == .saved else { return [] }
+        return m.links.prefix(HostLink.limit).filter { $0.complete && $0.url(host: "host.example") != nil }
+    }
+
+    /// Opens a link. One that points at the computer itself is a connection like any other, so an
+    /// offline computer is woken first; one that points elsewhere opens at once.
+    func open(_ link: HostLink, on m: RemoteMac) {
+        guard let url = link.url(host: routed(m).host), NSWorkspace.shared.urlForApplication(toOpen: url) != nil else {
+            NSSound.beep()
+            return
+        }
+        if link.usesHost {
+            connect(.link(link), m)
+        } else {
+            Popover.close()
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func isSaved(_ id: UUID?) -> Bool {
@@ -2345,6 +2903,40 @@ enum LocalNet {
     static func heldByAnother(ip: String, known: Set<String>, neighbours: [String: String]) -> Bool {
         guard let mac = neighbours[ip], !known.contains(mac) else { return false }
         return neighbours.contains { $0.key != ip && $0.value == mac }
+    }
+
+    /// How far apart Hop connects to a computer's local-network address by itself.
+    static let knockGap: TimeInterval = 300
+
+    /// Whether a knock is due: at once while the user is looking, otherwise `knockGap` after the last.
+    static func knockDue(last: Date?, now: Date, looking: Bool) -> Bool {
+        guard !looking, let last else { return true }
+        return now.timeIntervalSince(last) >= knockGap
+    }
+
+    /// Whether a saved address is one on a local network by its looks: a Bonjour name or an IPv4
+    /// address. Only such an address can be held by another device, so only it is worth asking about.
+    static func mayBeLocal(_ host: String) -> Bool {
+        let h = host.trimmingCharacters(in: .whitespaces).lowercased()
+        return h.hasSuffix(".local") || h.hasSuffix(".local.") || ipv4(h) != nil
+    }
+
+    /// Makes macOS find out who holds a local IP address, without connecting to anything there:
+    /// one empty datagram to a port nothing listens on. The answer shows up in `neighbours()`.
+    static func ask(_ ip: String) {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var to = sockaddr_in()
+        to.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        to.sin_family = sa_family_t(AF_INET)
+        to.sin_port = UInt16(33434).bigEndian
+        guard inet_pton(AF_INET, ip, &to.sin_addr) == 1 else { return }
+        _ = withUnsafePointer(to: &to) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                sendto(fd, nil, 0, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
     }
 
     /// What macOS currently knows about its neighbours on the local networks.
@@ -2664,7 +3256,11 @@ enum HopInfo {
 // MARK: - Actions
 
 /// The three ways a row connects to its computer.
-enum ConnectAction { case desktop, ssh, files }
+enum ConnectAction {
+    case desktop, ssh, files
+    /// One of the computer's own links, where its address points at the computer itself.
+    case link(HostLink)
+}
 
 enum Actions {
     static func url(_ scheme: String, _ m: RemoteMac) -> URL? {
@@ -2891,6 +3487,8 @@ enum Actions {
         case .desktop: desktop(m)
         case .ssh:     ssh(m)
         case .files:   files(m)
+        case .link(let link):
+            if let u = link.url(host: m.host) { NSWorkspace.shared.open(u) } else { NSSound.beep() }
         }
     }
 }
@@ -3293,8 +3891,10 @@ struct MacRow: View {
     @FocusState private var focus: Int?
 
     private var note: String? {
+        if store.sleeping.contains(m.id) { return "Going to sleep…" }
+        if store.sleepFailed[m.id] != nil { return "Did not sleep" }
         if store.wakeFailed.contains(m.id) { return "Did not wake" }
-        if store.online[m.id] == false { return "Offline" }
+        if store.online[m.id] == false { return store.stateWord(m) }
         if m.host.trimmingCharacters(in: .whitespaces).isEmpty { return "No host set" }
         let n = store.spaces(for: m).count
         if n > 0 { return "\(n) \(n == 1 ? "workspace" : "workspaces")" }
@@ -3382,6 +3982,7 @@ struct MacDetailView: View {
     /// Called with the saved Mac's id after "Add to My Macs", so the detail view can follow it.
     let pinned: (UUID) -> Void
     @EnvironmentObject var store: Store
+    @State private var confirmSleep = false
 
     private var hasHost: Bool { !m.host.trimmingCharacters(in: .whitespaces).isEmpty }
     private var offersTerminal: Bool { store.herdrTerminalInstalled && hasHost }
@@ -3412,10 +4013,16 @@ struct MacDetailView: View {
                 .help(files ? "Open shared files on \(m.name)" : "File Sharing appears to be off on \(m.name)")
                 .accessibilityLabel(files ? "Files" : "Files. File Sharing appears to be off")
                 let canWake = store.canWake(m)
-                if canWake || offersTerminal || m.origin != .saved {
+                let canSleep = store.canSleep(m)
+                if canWake || canSleep || offersTerminal || m.origin != .saved {
                     Menu {
                         if canWake {
                             Button("Wake") { store.wake(m) }
+                        }
+                        if canSleep {
+                            Button("Sleep") {
+                                if store.sleepNeedsConfirmation(m) { confirmSleep = true } else { store.sleep(m) }
+                            }
                         }
                         if offersTerminal {
                             Button("Open Herdr in Terminal") { Popover.close(); Actions.herdrTerminal(m) }
@@ -3442,6 +4049,30 @@ struct MacDetailView: View {
                 }
                 .accessibilityElement(children: .contain)
             }
+            if store.sleeping.contains(m.id) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Going to sleep…").font(.callout).foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            let links = store.links(for: m)
+            if !links.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: 6)], alignment: .leading, spacing: 6) {
+                    ForEach(links) { link in
+                        Button { store.open(link, on: m) } label: {
+                            Label(link.name, systemImage: "link").lineLimit(1).frame(maxWidth: .infinity)
+                        }
+                        .help(link.address)
+                        .accessibilityLabel("Open \(link.name) on \(m.name)")
+                    }
+                }
+                .controlSize(.regular)
+            }
+            let facts = store.facts(for: m)
+            if Diagnosis.applies(facts), store.waking[m.id] == nil, !store.sleeping.contains(m.id) {
+                DiagnosisView(facts: facts)
+            }
             if store.machine(for: m) != nil {
                 HerdrBlock(m: m)
             }
@@ -3456,6 +4087,47 @@ struct MacDetailView: View {
                 }
             }
         }
+        .alert("Put \(m.name) to sleep?", isPresented: $confirmSleep) {
+            Button("Sleep") { store.sleep(m) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Hop cannot wake it again from here.")
+        }
+    }
+}
+
+/// The facts Hop has about a computer that is not fully reachable, and what they most likely mean.
+struct DiagnosisView: View {
+    let facts: Diagnosis.Facts
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Diagnosis.lines(facts), id: \.label) { line in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(line.label).foregroundStyle(.secondary).frame(width: 88, alignment: .leading)
+                    Text(line.value).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(line.label): \(line.value)")
+            }
+            if let conclusion = Diagnosis.conclusion(facts) {
+                Text(conclusion.text).font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 3)
+                if conclusion.action == .openTailscale {
+                    Button("Open Tailscale") { Popover.close(); Actions.openTailscale() }
+                        .controlSize(.small)
+                }
+            }
+        }
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Why")
     }
 }
 
@@ -3614,7 +4286,7 @@ struct PopoverView: View {
             Text(nav.query).fontWeight(.medium).lineLimit(1)
                 .accessibilityLabel("Filtering by \(nav.query)")
             Spacer()
-            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh() }
+            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh(.asked) }
                 .keyboardShortcut("r")
             moreMenu
         }
@@ -3687,7 +4359,7 @@ struct PopoverView: View {
                 .help("\(text). Click to turn it on.")
                 .accessibilityLabel("\(text). Turn on")
             }
-            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh() }
+            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh(.asked) }
                 .keyboardShortcut("r")
             moreMenu
         }
@@ -3723,7 +4395,7 @@ struct PopoverView: View {
                 }
             }
             Spacer()
-            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh() }
+            IconButton(symbol: "arrow.clockwise", label: "Refresh Status") { store.refresh(.asked) }
                 .keyboardShortcut("r")
         }
         .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 6)
@@ -3731,8 +4403,10 @@ struct PopoverView: View {
 
     private func statusLine(_ m: RemoteMac) -> String {
         if store.waking[m.id] != nil { return store.wakingText(m.id) }
+        if store.sleeping.contains(m.id) { return "Going to sleep…" }
+        if store.sleepFailed[m.id] != nil { return "Did not sleep" }
         if store.wakeFailed.contains(m.id) { return "Did not wake" }
-        var parts = [store.online[m.id] == true ? "Online" : store.online[m.id] == false ? "Offline" : "Checking"]
+        var parts = [store.stateWord(m)]
         // Reached through the local network: that says more than where the row came from.
         let local = store.online[m.id] == true && store.localRoute[m.id] != nil
         if local { parts.append("Local network") }
@@ -3957,7 +4631,7 @@ struct ManagerView: View {
                     .disabled(!store.isSaved(selection))
                     .help("Remove from My Macs")
                     Spacer()
-                    Button { store.refresh(); store.refreshSSHConfig() } label: { Image(systemName: "arrow.clockwise") }
+                    Button { store.refresh(.asked); store.refreshSSHConfig() } label: { Image(systemName: "arrow.clockwise") }
                         .help("Refresh status, Tailscale devices and SSH config hosts")
                 }
                 .buttonStyle(.borderless)
@@ -3986,6 +4660,7 @@ struct ManagerView: View {
                             ForEach(Platform.allCases) { p in Text(p.label).tag(p) }
                         }
                     }
+                    linksSection(i)
                     Section { actions(store.hosts[i]) }
                     herdrSection(store.hosts[i])
                 }
@@ -3995,7 +4670,7 @@ struct ManagerView: View {
                     Section {
                         LabeledContent("Name", value: m.name)
                         LabeledContent(m.origin == .nearby ? "Address" : "Tailscale address", value: m.host)
-                        LabeledContent("Status", value: store.online[m.id] == true ? "Online" : "Offline")
+                        LabeledContent("Status", value: store.stateWord(m))
                         if let found = foundAddresses(m) {
                             Text(found).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
@@ -4136,6 +4811,42 @@ struct ManagerView: View {
             Section("Herdr") {
                 Button("Open Herdr in Terminal") { Actions.herdrTerminal(m) }
             }
+        }
+    }
+
+    /// The links of a saved computer: a name and an address each, at most eight.
+    @ViewBuilder
+    private func linksSection(_ i: Int) -> some View {
+        Section {
+            ForEach($store.hosts[i].links) { $link in
+                HStack(spacing: 8) {
+                    TextField("Name", text: $link.name, prompt: Text("Web"))
+                        .labelsHidden().frame(width: 120)
+                        .accessibilityLabel("Link name")
+                    TextField("Address", text: $link.address, prompt: Text("http://{host}:5000"))
+                        .labelsHidden()
+                        .accessibilityLabel("Link address")
+                    Button {
+                        let id = link.id
+                        store.hosts[i].links.removeAll { $0.id == id }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove this link")
+                    .accessibilityLabel("Remove link \(link.name)")
+                }
+                if !link.address.trimmingCharacters(in: .whitespaces).isEmpty, link.url(host: "host.example") == nil {
+                    Text("Hop cannot open this address").font(.caption).foregroundStyle(.red)
+                }
+            }
+            if store.hosts[i].links.count < HostLink.limit {
+                Button("Add Link") { store.hosts[i].links.append(HostLink()) }
+            }
+        } header: {
+            Text("Links")
+        } footer: {
+            Text("Shown as buttons when you open this computer. {host} stands for its address.")
         }
     }
 

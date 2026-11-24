@@ -110,6 +110,22 @@
         },
         {
           "@type": "Question",
+          "name": "Hop shows a computer as offline or asleep. How do I find out why?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Click the computer's name. Hop lists what Tailscale says about it, whether it is on your local network, which services answer and whether it can be woken, and ends with the most likely reason, such as 'Tailscale is not running on it. It may have restarted and be waiting for someone to log in.' A computer is marked Asleep when another device on your network, usually an Apple TV or HomePod, is answering for it; connecting wakes it. Hop sees whether a computer answers, not what happens after you connect, so it cannot say why a password was refused."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can Hop put a computer to sleep?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes, for Macs and Linux computers that are online with SSH on. Choose Sleep from the computer's … menu. Hop asks over SSH and needs SSH that works without a question; test it with 'ssh <name>' in Terminal. It runs 'pmset sleepnow' on a Mac and 'systemctl suspend' on Linux, and nothing else. If Hop would have no way to wake the computer again, it asks first. A computer put to sleep from Hop is left alone and stays marked Asleep until you connect to it or press Refresh. Windows is not covered."
+          }
+        },
+        {
+          "@type": "Question",
           "name": "Does Hop collect telemetry, analytics, or require an account?",
           "acceptedAnswer": {
             "@type": "Answer",
@@ -270,7 +286,7 @@
       <a class="btn" href="https://github.com/sercanatalik/hop-remote-launcher">View on GitHub</a>
     </div>
     <p class="fine">Free and open source (MIT) · macOS 13 or later · Apple silicon and Intel · <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/latest">Release notes</a></p>
-    <p class="fine new"><strong>New in 1.5:</strong> wake a sleeping computer from anywhere. Away from home, Hop asks another computer on its network to send the wake-up packet. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/tag/v1.5.0">See what changed</a></p>
+    <p class="fine new"><strong>New in 1.6:</strong> Hop says why a computer cannot be reached, can put one to sleep, and takes your own links. <a href="https://github.com/sercanatalik/hop-remote-launcher/releases/tag/v1.6.0">See what changed</a></p>
 
     <div class="shots">
       <figure>
@@ -307,6 +323,9 @@
       <div class="card"><h3>Wakes sleeping computers</h3><p>Connect to a sleeping computer and Hop wakes it first, then opens the session when it answers. It finds each computer's MAC address by itself; nothing to type.</p></div>
       <div class="card"><h3>Wake from anywhere</h3><p>Away from home, Hop asks another computer on that network to send the wake-up packet. <a href="#wake">How it works</a></p></div>
       <div class="card"><h3>Local network reach</h3><p>A Mac that is awake but not back on Tailscale is still reached, over your local network, and shown as Online · Local network.</p></div>
+      <div class="card"><h3>Says why</h3><p>When a computer cannot be reached, Hop lists what it knows, from Tailscale, your network and its services, and names the most likely reason. A sleeping Mac is marked Asleep and left asleep.</p></div>
+      <div class="card"><h3>Sleep</h3><p>Put a Mac or Linux computer to sleep from its … menu. Hop asks over SSH, and asks you first if it could not wake the computer again.</p></div>
+      <div class="card"><h3>Your own links</h3><p>Add buttons to a saved computer for anything else it offers, such as a NAS's web page: <code>http://{host}:5000</code>.</p></div>
       <div class="card"><h3>Keeps your list current</h3><p>When Tailscale renames a device, the saved computer follows it. When a device leaves your tailnet, it is removed. Copy any address from the detail view.</p></div>
       <div class="card"><h3>Keyboard</h3><p>Open Hop from any app with a global shortcut, type to filter, and connect with ⌘1, ⌘2 or ⌘3.</p></div>
       <div class="card"><h3>Alerts</h3><p>Optionally get a notification when a saved Mac goes offline or comes back. Off until you turn it on.</p></div>
@@ -434,6 +453,7 @@ cd hop-remote-launcher
 ./build.sh --install</code></pre></li>
           <li><p>Hop is copied to Applications and starts by itself. Its icon appears in the menu bar.</p></li>
         </ol>
+        <p class="fine"><code>./test.sh</code> runs the checks for Hop's logic.</p>
       </div>
     </div>
   </div>
@@ -501,6 +521,14 @@ cd hop-remote-launcher
       <details>
         <summary>How does Hop compare to apps like Screens 5 or Jump Desktop?</summary>
         <p>Hop is a featherweight launcher, not a heavy remote desktop canvas client. It triggers macOS's fast built-in Screen Sharing app, native Terminal, and Finder file sharing. It consumes virtually zero battery and memory, has no subscription, and is 100% free and open-source.</p>
+      </details>
+      <details>
+        <summary>Hop shows a computer as offline or asleep. How do I find out why?</summary>
+        <p>Click the computer's name. Hop lists what Tailscale says about it, whether it is on your local network, which services answer and whether it can be woken, and ends with the most likely reason, such as "Tailscale is not running on it. It may have restarted and be waiting for someone to log in." A computer is marked <strong>Asleep</strong> when another device on your network, usually an Apple TV or HomePod, is answering for it; connecting wakes it. Hop sees whether a computer answers, not what happens after you connect, so it cannot say why a password was refused.</p>
+      </details>
+      <details>
+        <summary>Can Hop put a computer to sleep?</summary>
+        <p>Yes, for Macs and Linux computers that are online with SSH on. Choose <strong>Sleep</strong> from the computer's <strong>…</strong> menu. Hop asks over SSH and needs SSH that works without a question; test it with <code>ssh &lt;name&gt;</code> in Terminal. It runs <code>pmset sleepnow</code> on a Mac and <code>systemctl suspend</code> on Linux, and nothing else. If Hop would have no way to wake the computer again, it asks first. A computer put to sleep from Hop is left alone and stays marked Asleep until you connect to it or press Refresh. Windows is not covered.</p>
       </details>
       <details>
         <summary>Does Hop collect telemetry, analytics, or require an account?</summary>

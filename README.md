@@ -55,6 +55,29 @@ You rarely need Wake itself. Choose Screen Share, SSH or Files for a computer th
   </picture>
 </p>
 
+**When a computer cannot be reached**, click its name. Hop lists what it knows and ends with the most likely reason:
+
+```
+Tailscale      offline, last seen 2 hours ago
+Local network  answering at Mac-mini.local
+Services       Screen Sharing off · SSH on · File Sharing off
+Wake           ready
+
+Tailscale is not running on it. It may have restarted and be waiting for someone to log in.
+```
+
+The same appears when a service is off, when a wake did not work, and when Hop reaches a computer only over the local network. It uses what the regular checks already found and connects to nothing, so opening it never wakes a computer. Hop sees whether a computer answers, not what happens after you connect: it cannot tell you why a password was refused.
+
+A computer is marked **Asleep** in place of Offline when Hop has evidence for it: on networks with an Apple TV or HomePod, that device answers for sleeping Macs, and Hop notices. It then leaves the Mac alone until you connect, so listing it does not wake it. This holds for nearby computers too.
+
+A Mac on Ethernet sleeps differently: nothing answers for it, and a connection to one of its services half wakes it for a few seconds, so to Hop it looks awake. Hop therefore connects to local-network addresses by itself only once every five minutes, and at once when you open the panel. With the panel closed, the status of a computer saved by a local name or IP address, and **Online · Local network**, can be up to five minutes old. Tailscale addresses are still checked every 30 seconds.
+
+**Sleep** is in a computer's **…** menu, for Macs and Linux computers that are online with SSH on. Hop asks over SSH, the row reads **Going to sleep…** and then **Asleep**. It needs SSH that works without a question, the same as [waking from elsewhere](#waking-from-elsewhere): test with `ssh <name>` in Terminal. Hop runs `pmset sleepnow` on a Mac and `systemctl suspend` on Linux, and nothing else. If Hop would have no way to wake the computer again, it asks before putting it to sleep. Windows is not covered.
+
+A computer you put to sleep from Hop is then left completely alone: Hop does not check it, so nothing Hop does can disturb its sleep, and no alert is sent for it. It stays marked Asleep until you connect to it, which wakes it, or press Refresh. If someone wakes it at its own keyboard meanwhile, Hop still says Asleep until then.
+
+**Links** are buttons you add to a saved computer for whatever else it offers: a NAS's web page, a second screen. In Manage Macs, under **Links**, give each a name and an address, up to eight. Write `{host}` where the computer's address goes, for example `http://{host}:5000`, and the link keeps working when Hop reaches the computer over the local network or Tailscale renames it. An address without `http://` in front is taken as a web address. A link with `{host}` wakes a sleeping computer first, like the other buttons; any other link, such as your router's page at `192.168.1.1`, opens at once.
+
 Macs live in three groups:
 
 - **My Macs** are the ones you add yourself, by Bonjour name, IP address or Tailscale name. The group is shown once you have saved one.
@@ -71,7 +94,7 @@ Both kinds of discovery are under **Discovery** in the Manage Macs toolbar: **Sh
 
 **Manage Macs…** and **Quit Hop** are at the bottom of the panel. The **More** menu at the top has agent status, Open Screen Sharing, GitHub, Report an Issue and About. ⌘R refreshes, ⌘, opens Manage Macs and ⌘Q quits while the panel is open.
 
-Hop is a single Swift file with no dependencies, no account and no telemetry, and it talks only to your own computers. Your list stays in `~/Library/Application Support/Hop/hosts.json`, and the MAC addresses Hop finds in `learned.json` beside it.
+Hop is a single Swift file with no dependencies, no account and no telemetry, and it talks only to your own computers. Your list and its links stay in `~/Library/Application Support/Hop/hosts.json`, and the MAC addresses Hop finds in `learned.json` beside it.
 
 ### Keyboard
 
@@ -205,6 +228,8 @@ Hop is copied to Applications and starts by itself. Its icon appears in the menu
 
 `./build.sh` alone builds `build/Hop.app` without installing it. `UNIVERSAL=1 ./build.sh` builds one app for both Apple silicon and Intel.
 
+`./test.sh` runs the checks for Hop's logic. They need nothing but the two source files and finish in a few seconds; every build on GitHub runs them first.
+
 ### Update or remove
 
 To update, download the newer `Hop.zip` and replace the app, or pull the latest code and run `./build.sh --install` again. To remove Hop, quit it, delete **Hop.app** from Applications, and delete `~/Library/Application Support/Hop` if you also want your Mac list gone.
@@ -251,6 +276,10 @@ The first time Hop starts, macOS may ask for **Local Network** access. Allow it,
 | A Mac is awake but shown as offline | It has not rejoined Tailscale yet, which on a Mac can wait until someone logs in. On the same network Hop shows it as **Online · Local network** and connects that way; turn on **Show nearby computers** if it does not. |
 | "Did not wake" | The computer did not answer within 30 seconds, or 45 when it was woken through another computer. It may be shut down rather than asleep, have "Wake for network access" turned off, or be on another network with no computer there that Hop can ask. |
 | Away from home, the row says "Waking…" and never "Waking through…" | No computer could send the packet. Manage Macs shows "Can be woken through" for the computer when Hop knows one; that computer also has to be online, and `ssh` to it from Terminal has to work without asking anything. |
+| A computer says "Asleep" | You put it to sleep from Hop, or another device on your network, usually an Apple TV or HomePod, is answering for it while it sleeps. Connect and it wakes. If it is awake and still says Asleep, press Refresh. |
+| "Did not sleep" | Hop could not sign in over SSH without a question, or the computer refused the request. Click the computer's name to see which. For the first, make `ssh <name>` in Terminal work without a password. |
+| Sleep is missing from the … menu | The computer is offline, SSH is off on it, or it is a Windows PC. |
+| A link button is missing | Its address cannot be opened. Manage Macs says so under the address. |
 | A button is dimmed | That service appears to be off on that computer. Turn it on there (see the table above); the button still tries if you click it. |
 | Remote Desktop is dimmed on every Windows PC | No remote desktop app is installed on your Mac. Click the button to get Windows App. |
 | A host from your SSH config shows as offline | It is probably only reachable through a jump host. SSH still works; Screen Share and Files won't. |
